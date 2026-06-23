@@ -10,13 +10,19 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export const metadata: Metadata = { title: "Ingresar" };
 
-export default async function LoginPage() {
-  // Si ya hay sesión, no mostrar el login
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string; error?: string }>;
+}) {
   const session = await getSession();
   if (session) redirect("/");
+
+  const { message, error } = await searchParams;
 
   return (
     <Card className="w-full max-w-sm shadow-lg">
@@ -32,7 +38,21 @@ export default async function LoginPage() {
         <CardTitle className="text-xl">Hunuc Pachacutek</CardTitle>
         <CardDescription>Ingresá para gestionar el almacén</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
+        {message === "clave-actualizada" && (
+          <Alert>
+            <AlertDescription>
+              Contraseña actualizada. Podés iniciar sesión.
+            </AlertDescription>
+          </Alert>
+        )}
+        {error === "link-invalido" && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              El enlace es inválido o ya expiró. Solicitá uno nuevo.
+            </AlertDescription>
+          </Alert>
+        )}
         <LoginForm />
       </CardContent>
     </Card>

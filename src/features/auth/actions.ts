@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { parseUserAgent, getClientIp } from "@/lib/user-agent";
-import { loginSchema } from "./schemas";
+import { loginSchema, resetPasswordSchema } from "./schemas";
 
 export interface AuthActionState {
   error?: string;
@@ -71,6 +71,31 @@ export async function signInAction(
   }
 
   redirect("/");
+}
+
+/** Actualiza la contraseña del usuario autenticado luego del reset. */
+export async function updatePasswordAction(
+  _prev: AuthActionState,
+  formData: FormData,
+): Promise<AuthActionState> {
+  const parsed = resetPasswordSchema.safeParse({
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({
+    password: parsed.data.password,
+  });
+
+  if (error) {
+    return { error: "No se pudo actualizar la contraseña. Intentá de nuevo." };
+  }
+
+  redirect("/login?message=clave-actualizada");
 }
 
 /** Cierra la sesión y vuelve al login. */
