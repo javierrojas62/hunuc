@@ -765,6 +765,10 @@ export type Database = {
         Args: { p_counted: number; p_notes?: string; p_register: string }
         Returns: Json
       }
+      cancel_sale: {
+        Args: { p_sale_id: string }
+        Returns: undefined
+      }
       create_sale: {
         Args: {
           p_discount?: number
