@@ -138,6 +138,11 @@
     color: var(--foreground);
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+  @media (min-width: 768px) {
+    html {
+      font-size: 17px;
+    }
+  }
   /* Tablas y POS: tipografía tabular para alinear precios */
   .tabular-nums {
     font-variant-numeric: tabular-nums;

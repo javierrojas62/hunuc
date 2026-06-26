@@ -43,20 +43,14 @@ export async function createSaleAction(input: unknown): Promise<CreateSaleResult
   return { ok: true, ticketNumber: result.ticket_number, total: result.total };
 }
 
-/** Anula una venta (solo admin). No restituye stock automáticamente. */
+/** Anula una venta: revierte stock, caja y escribe kardex (solo admin). */
 export async function cancelSaleAction(id: string): Promise<{ ok: boolean; error?: string }> {
   await requireAdmin();
   const supabase = await createClient();
-  const { error } = await supabase
-    .from("sales")
-    .update({ status: "cancelled" })
-    .eq("id", id);
+  const { error } = await supabase.rpc("cancel_sale", { p_sale_id: id });
   if (error) return { ok: false, error: error.message };
-  await supabase.rpc("log_audit", {
-    p_action: "sale_cancel",
-    p_entity: "sale",
-    p_entity_id: id,
-  });
   revalidatePath("/sales");
+  revalidatePath("/cash");
+  revalidatePath("/products");
   return { ok: true };
 }

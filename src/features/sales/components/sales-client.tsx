@@ -201,6 +201,7 @@ export function SalesClient({ isAdmin }: { isAdmin: boolean }) {
         saleId={detailId}
         open={Boolean(detailId)}
         onOpenChange={(o) => !o && setDetailId(null)}
+        isAdmin={isAdmin}
       />
     </div>
   );
