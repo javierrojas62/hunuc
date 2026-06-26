@@ -19,6 +19,7 @@ config({ path: ".env.local" });
 
 const args = process.argv.slice(2);
 const DRY = args.includes("--dry");
+const RESET = args.includes("--reset");
 const fileArg = args[args.indexOf("--file") + 1];
 const FILE =
   fileArg && !fileArg.startsWith("--")
@@ -109,6 +110,30 @@ async function main() {
       .select("id, code_prefix");
     if (error) throw error;
     (created ?? []).forEach((p) => p.code_prefix && prodMap.set(p.code_prefix, p.id));
+  }
+
+  // Limpiar productos existentes si se pide reset (evita duplicados)
+  if (RESET) {
+    console.log("🗑  --reset: eliminando productos existentes de la sucursal…");
+    const { error: delErr } = await supabase
+      .from("products")
+      .delete()
+      .eq("branch_id", branchId);
+    if (delErr) throw delErr;
+    console.log("   Productos eliminados.");
+  } else {
+    const { count } = await supabase
+      .from("products")
+      .select("id", { count: "exact", head: true })
+      .eq("branch_id", branchId);
+    if (count && count > 0) {
+      console.error(
+        `\n❌ Ya existen ${count} productos en la sucursal.\n` +
+          "   Usá --reset para borrarlos antes de reimportar, o importá desde la app\n" +
+          "   usando el Excel exportado (que tiene columna ID para actualizar sin duplicar).\n",
+      );
+      process.exit(1);
+    }
   }
 
   // Productos
