@@ -59,6 +59,8 @@ src/
     (auth)/
       login/
         page.tsx
+      reset-password/
+        page.tsx
       layout.tsx
     (dashboard)/
       admin/
@@ -78,6 +80,11 @@ src/
         page.tsx
       layout.tsx
       page.tsx
+    auth/
+      callback/
+        route.ts
+      confirm/
+        route.ts
     favicon.ico
     globals.css
     layout.tsx
@@ -135,6 +142,7 @@ src/
     auth/
       components/
         login-form.tsx
+        reset-password-form.tsx
       actions.ts
       schemas.ts
     cash/
@@ -234,9 +242,11 @@ supabase/
     20260602_0007_views.sql
     20260602_0008_dashboard_functions.sql
     20260602_0009_bulk_update.sql
+    20260602_0010_cancel_sale.sql
   fix_sucursal.sql
   seed.sql
 .gitignore
+CLAUDE.md
 components.json
 eslint.config.mjs
 GUIA_DE_USO.md
@@ -271,165 +281,11 @@ This section contains the contents of the repository's files.
 <svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
 </file>
 
-<file path="scripts/import-excel.ts">
-/**
- * Seed / importador del Excel real del negocio.
- *
- *   pnpm seed            → importa a Supabase (requiere credenciales en .env.local)
- *   pnpm seed -- --dry   → solo parsea y muestra estadísticas (sin tocar la DB)
- *   pnpm seed -- --file "ruta.xlsx"
- *
- * Detecta columnas, limpia encabezados repetidos/banners, normaliza unidades,
- * deriva productores (prefijo de código) y categorías (palabras clave).
- */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { config } from "dotenv";
-import { createClient } from "@supabase/supabase-js";
-import { readWorkbook, pickCatalogSheet } from "../src/features/import/workbook";
-import { parseProductRows } from "../src/features/import/parser";
-
-config({ path: ".env.local" });
-
-const args = process.argv.slice(2);
-const DRY = args.includes("--dry");
-const fileArg = args[args.indexOf("--file") + 1];
-const FILE =
-  fileArg && !fileArg.startsWith("--")
-    ? fileArg
-    : "business-assets/PLANILLAS PARA JAVIER.xlsx";
-
-const DEFAULT_BRANCH = "00000000-0000-0000-0000-000000000001";
-
-function titleCase(s: string) {
-  return s.charAt(0) + s.slice(1).toLowerCase();
-}
-
-async function main() {
-  console.log(`\n📄 Leyendo ${FILE} …`);
-  const buf = readFileSync(resolve(FILE));
-  const sheets = readWorkbook(new Uint8Array(buf));
-  console.log(`   Hojas: ${sheets.map((s) => `"${s.name}"`).join(", ")}`);
-
-  const sheet = pickCatalogSheet(sheets);
-  console.log(`   Hoja de catálogo: "${sheet.name}" (${sheet.rows.length} filas)`);
-
-  const { products, stats, columnMap } = parseProductRows(sheet.rows);
-
-  console.log("\n📊 Análisis:");
-  console.table(stats);
-  console.log("   Mapa de columnas detectado:", columnMap);
-
-  // Distribución por categoría
-  const byCat = products.reduce<Record<string, number>>((acc, p) => {
-    acc[p.categorySlug] = (acc[p.categorySlug] ?? 0) + 1;
-    return acc;
-  }, {});
-  console.log("\n🗂  Productos por categoría:");
-  console.table(byCat);
-
-  const prefixes = [...new Set(products.map((p) => p.producerPrefix).filter(Boolean))] as string[];
-  console.log(`\n🏭 Productores detectados (${prefixes.length}):`, prefixes.slice(0, 25).join(", "), prefixes.length > 25 ? "…" : "");
-  console.log(`\n⚠️  Productos a revisar: ${stats.needsReview}`);
-  console.log("   Ejemplos:");
-  products.filter((p) => p.needsReview).slice(0, 5).forEach((p) =>
-    console.log(`   · fila ${p.rowNumber} [${p.code || "s/cód"}] ${p.name} → ${p.issues.join("; ")}`),
-  );
-
-  if (DRY) {
-    console.log("\n✅ Dry-run: no se escribió nada en la base.\n");
-    return;
-  }
-
-  // ── Escritura en Supabase ──────────────────────────────────────────────
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || url.includes("placeholder") || key.includes("placeholder")) {
-    console.error(
-      "\n❌ Faltan credenciales reales de Supabase en .env.local " +
-        "(NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY).\n" +
-        "   Corré primero las migraciones + seed.sql en tu proyecto, completá .env.local y reintentá.\n" +
-        "   Mientras tanto podés usar:  pnpm seed -- --dry\n",
-    );
-    process.exit(1);
-  }
-
-  const supabase = createClient(url, key, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-
-  // Branch
-  const branchId = process.env.NEXT_PUBLIC_DEFAULT_BRANCH_ID || DEFAULT_BRANCH;
-
-  // Categorías: slug → id
-  const { data: cats, error: catErr } = await supabase.from("categories").select("id, slug");
-  if (catErr) throw catErr;
-  const catMap = new Map((cats ?? []).map((c) => [c.slug, c.id]));
-  if (!catMap.has("general")) {
-    console.warn("⚠️  No se encontraron categorías. ¿Corriste supabase/seed.sql?");
-  }
-
-  // Productores: insertar solo los que faltan (sin depender de constraint único)
-  console.log("\n🏭 Sincronizando productores…");
-  const { data: existingProducers } = await supabase.from("producers").select("id, code_prefix");
-  const prodMap = new Map(
-    (existingProducers ?? []).filter((p) => p.code_prefix).map((p) => [p.code_prefix as string, p.id]),
-  );
-  const missing = prefixes.filter((p) => !prodMap.has(p));
-  if (missing.length) {
-    const { data: created, error } = await supabase
-      .from("producers")
-      .insert(missing.map((p) => ({ name: titleCase(p), code_prefix: p })))
-      .select("id, code_prefix");
-    if (error) throw error;
-    (created ?? []).forEach((p) => p.code_prefix && prodMap.set(p.code_prefix, p.id));
-  }
-
-  // Productos
-  console.log("📦 Insertando productos…");
-  const payload = products.map((p) => ({
-    code: p.code,
-    name: p.name,
-    unit_label: p.unitLabel,
-    unit_value: p.unitValue,
-    unit_base: p.unitBase,
-    price: p.price,
-    stock: 0,
-    min_stock: 5,
-    category_id: catMap.get(p.categorySlug) ?? catMap.get("general") ?? null,
-    producer_id: p.producerPrefix ? (prodMap.get(p.producerPrefix) ?? null) : null,
-    branch_id: branchId,
-    needs_review: p.needsReview,
-    is_active: true,
-  }));
-
-  const CHUNK = 200;
-  let inserted = 0;
-  for (let i = 0; i < payload.length; i += CHUNK) {
-    const slice = payload.slice(i, i + CHUNK);
-    const { error } = await supabase.from("products").insert(slice);
-    if (error) {
-      console.error(`❌ Error en lote ${i / CHUNK + 1}:`, error.message);
-      process.exit(1);
-    }
-    inserted += slice.length;
-    process.stdout.write(`\r   ${inserted}/${payload.length}`);
-  }
-
-  console.log(`\n\n✅ Importación completa: ${inserted} productos, ${prefixes.length} productores.\n`);
-}
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
-</file>
-
-<file path="src/app/(auth)/login/page.tsx">
+<file path="src/app/(auth)/reset-password/page.tsx">
 import type { Metadata } from "next";
 import Image from "next/image";
 import { redirect } from "next/navigation";
-import { LoginForm } from "@/features/auth/components/login-form";
+import { ResetPasswordForm } from "@/features/auth/components/reset-password-form";
 import { getSession } from "@/lib/auth/session";
 import {
   Card,
@@ -439,12 +295,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-export const metadata: Metadata = { title: "Ingresar" };
+export const metadata: Metadata = { title: "Restablecer contraseña" };
 
-export default async function LoginPage() {
-  // Si ya hay sesión, no mostrar el login
+export default async function ResetPasswordPage() {
   const session = await getSession();
-  if (session) redirect("/");
+  if (!session) redirect("/login");
 
   return (
     <Card className="w-full max-w-sm shadow-lg">
@@ -457,11 +312,13 @@ export default async function LoginPage() {
           priority
           className="rounded-xl"
         />
-        <CardTitle className="text-xl">Hunuc Pachacutek</CardTitle>
-        <CardDescription>Ingresá para gestionar el almacén</CardDescription>
+        <CardTitle className="text-xl">Nueva contraseña</CardTitle>
+        <CardDescription>
+          Elegí una contraseña segura para tu cuenta
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        <LoginForm />
+        <ResetPasswordForm />
       </CardContent>
     </Card>
   );
@@ -606,151 +463,24 @@ export default async function HomePage() {
 }
 </file>
 
-<file path="src/app/globals.css">
-@import "tailwindcss";
-@import "tw-animate-css";
+<file path="src/app/auth/callback/route.ts">
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
-@custom-variant dark (&:is(.dark *));
+export async function GET(request: Request) {
+  const { searchParams, origin } = new URL(request.url);
+  const code = searchParams.get("code");
+  const next = searchParams.get("next") ?? "/";
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-success: var(--success);
-  --color-success-foreground: var(--success-foreground);
-  --color-warning: var(--warning);
-  --color-warning-foreground: var(--warning-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-}
-
-:root {
-  --radius: 0.65rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  /* Verde natural (almacén agroecológico) */
-  --primary: oklch(0.55 0.12 150);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.95 0.03 150);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.6 0.13 150);
-  --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.75 0.15 75);
-  --warning-foreground: oklch(0.205 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.55 0.12 150);
-  --chart-1: oklch(0.55 0.12 150);
-  --chart-2: oklch(0.6 0.118 185);
-  --chart-3: oklch(0.65 0.15 75);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.55 0.12 150);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.7 0.13 150);
-  --primary-foreground: oklch(0.145 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.3 0.04 150);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.7 0.13 150);
-  --success-foreground: oklch(0.145 0 0);
-  --warning: oklch(0.8 0.15 75);
-  --warning-foreground: oklch(0.145 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.7 0.13 150);
-  --chart-1: oklch(0.7 0.13 150);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.7 0.13 150);
-  --sidebar-primary-foreground: oklch(0.145 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
-@layer base {
-  * {
-    border-color: var(--border);
-    outline-color: color-mix(in oklch, var(--ring) 50%, transparent);
+  if (code) {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`);
+    }
   }
-  body {
-    background-color: var(--background);
-    color: var(--foreground);
-    font-feature-settings: "rlig" 1, "calt" 1;
-  }
-  /* Tablas y POS: tipografía tabular para alinear precios */
-  .tabular-nums {
-    font-variant-numeric: tabular-nums;
-  }
+
+  return NextResponse.redirect(`${origin}/login?error=link-invalido`);
 }
 </file>
 
@@ -4862,100 +4592,68 @@ export function LoginForm() {
 }
 </file>
 
-<file path="src/features/auth/actions.ts">
-"use server";
+<file path="src/features/auth/components/reset-password-form.tsx">
+"use client";
 
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { parseUserAgent, getClientIp } from "@/lib/user-agent";
-import { loginSchema } from "./schemas";
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
+import { Loader2 } from "lucide-react";
+import { updatePasswordAction, type AuthActionState } from "../actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
-export interface AuthActionState {
-  error?: string;
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" className="w-full" disabled={pending}>
+      {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+      Guardar nueva contraseña
+    </Button>
+  );
 }
 
-/**
- * Inicia sesión con email + contraseña. Registra la sesión y un audit log
- * de "login". Redirige al inicio si tiene éxito.
- */
-export async function signInAction(
-  _prev: AuthActionState,
-  formData: FormData,
-): Promise<AuthActionState> {
-  const parsed = loginSchema.safeParse({
-    email: formData.get("email"),
-    password: formData.get("password"),
-  });
-  if (!parsed.success) {
-    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
-  }
+export function ResetPasswordForm() {
+  const [state, formAction] = useActionState<AuthActionState, FormData>(
+    updatePasswordAction,
+    {},
+  );
 
-  const supabase = await createClient();
-  const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
-
-  if (error || !data.user) {
-    return { error: "Email o contraseña incorrectos" };
-  }
-
-  // Verificar que el perfil esté activo
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_active")
-    .eq("id", data.user.id)
-    .single();
-  if (profile && !profile.is_active) {
-    await supabase.auth.signOut();
-    return { error: "Tu cuenta está desactivada. Contactá al administrador." };
-  }
-
-  // Registrar sesión + auditoría (best-effort, no bloquea el login)
-  try {
-    const h = await headers();
-    const ua = h.get("user-agent");
-    const { browser, device } = parseUserAgent(ua);
-    const ip = getClientIp(h);
-
-    await supabase.from("sessions").insert({
-      user_id: data.user.id,
-      ip,
-      user_agent: ua,
-      device,
-      browser,
-    });
-    await supabase.rpc("log_audit", {
-      p_action: "login",
-      p_entity: "session",
-      p_ip: ip ?? undefined,
-      p_user_agent: ua ?? undefined,
-      p_device: device,
-      p_browser: browser,
-    });
-  } catch {
-    // ignorar errores de telemetría
-  }
-
-  redirect("/");
+  return (
+    <form action={formAction} className="flex flex-col gap-4">
+      {state.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
+      <div className="grid gap-2">
+        <Label htmlFor="password">Nueva contraseña</Label>
+        <Input
+          id="password"
+          name="password"
+          type="password"
+          autoComplete="new-password"
+          placeholder="Mínimo 8 caracteres"
+          required
+          autoFocus
+        />
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor="confirmPassword">Confirmar contraseña</Label>
+        <Input
+          id="confirmPassword"
+          name="confirmPassword"
+          type="password"
+          autoComplete="new-password"
+          placeholder="Repetí la contraseña"
+          required
+        />
+      </div>
+      <SubmitButton />
+    </form>
+  );
 }
-
-/** Cierra la sesión y vuelve al login. */
-export async function signOutAction() {
-  const supabase = await createClient();
-  await supabase.rpc("log_audit", { p_action: "logout", p_entity: "session" });
-  await supabase.auth.signOut();
-  redirect("/login");
-}
-</file>
-
-<file path="src/features/auth/schemas.ts">
-import { z } from "zod";
-
-export const loginSchema = z.object({
-  email: z.string().email("Email inválido"),
-  password: z.string().min(6, "Mínimo 6 caracteres"),
-});
-
-export type LoginInput = z.infer<typeof loginSchema>;
 </file>
 
 <file path="src/features/cash/components/cash-client.tsx">
@@ -8418,306 +8116,6 @@ export function PosSearch({ onSelect }: { onSelect: (p: ProductViewRow) => void 
 }
 </file>
 
-<file path="src/features/sales/components/sale-detail-dialog.tsx">
-"use client";
-
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Separator } from "@/components/ui/separator";
-import { useSaleDetail } from "../hooks";
-import { PaymentBadge } from "./payment-badge";
-import { formatCurrency, formatDateTime } from "@/lib/format";
-
-export function SaleDetailDialog({
-  saleId,
-  open,
-  onOpenChange,
-}: {
-  saleId: string | null;
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-}) {
-  const { data, isLoading } = useSaleDetail(open ? saleId : null);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>
-            {isLoading || !data ? "Detalle de venta" : `Ticket #${data.ticket_number}`}
-          </DialogTitle>
-        </DialogHeader>
-
-        {isLoading || !data ? (
-          <div className="space-y-2">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-8 w-full" />
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <span>{formatDateTime(data.created_at)}</span>
-              <PaymentBadge method={data.payment_method} />
-            </div>
-            {data.seller && (
-              <p className="text-sm text-muted-foreground">
-                Vendedor: {data.seller.full_name}
-              </p>
-            )}
-            <Separator />
-            <ul className="space-y-1.5">
-              {data.items.map((it) => (
-                <li key={it.id} className="flex justify-between gap-2 text-sm">
-                  <span className="flex-1">
-                    <span className="tabular-nums text-muted-foreground">
-                      {Number(it.quantity)}×{" "}
-                    </span>
-                    {it.product_name}
-                  </span>
-                  <span className="tabular-nums">{formatCurrency(Number(it.subtotal))}</span>
-                </li>
-              ))}
-            </ul>
-            <Separator />
-            {Number(data.discount) > 0 && (
-              <div className="flex justify-between text-sm text-muted-foreground">
-                <span>Descuento</span>
-                <span className="tabular-nums">- {formatCurrency(Number(data.discount))}</span>
-              </div>
-            )}
-            <div className="flex justify-between text-lg font-bold">
-              <span>Total</span>
-              <span className="tabular-nums">{formatCurrency(Number(data.total))}</span>
-            </div>
-            {data.status === "cancelled" && (
-              <p className="text-center text-sm font-medium text-destructive">
-                Venta anulada
-              </p>
-            )}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-</file>
-
-<file path="src/features/sales/components/sales-client.tsx">
-"use client";
-
-import { useMemo, useState } from "react";
-import type { ColumnDef } from "@tanstack/react-table";
-import { Eye } from "lucide-react";
-import { PageHeader } from "@/components/shared/page-header";
-import { DataTable } from "@/components/shared/data-table";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Card, CardContent } from "@/components/ui/card";
-import { formatCurrency, formatDateTime } from "@/lib/format";
-import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
-import { useSales } from "../hooks";
-import type { SaleListRow, SaleListFilters } from "../api";
-import { PaymentBadge } from "./payment-badge";
-import { SaleDetailDialog } from "./sale-detail-dialog";
-
-const ALL = "__all__";
-const RANGES = [
-  { value: "today", label: "Hoy" },
-  { value: "7d", label: "Últimos 7 días" },
-  { value: "30d", label: "Últimos 30 días" },
-  { value: "all", label: "Todas" },
-];
-
-function rangeToFrom(range: string): string | undefined {
-  const d = new Date();
-  if (range === "today") {
-    d.setHours(0, 0, 0, 0);
-    return d.toISOString();
-  }
-  if (range === "7d") return new Date(Date.now() - 7 * 864e5).toISOString();
-  if (range === "30d") return new Date(Date.now() - 30 * 864e5).toISOString();
-  return undefined;
-}
-
-export function SalesClient({ isAdmin }: { isAdmin: boolean }) {
-  const [range, setRange] = useState("today");
-  const [paymentMethod, setPaymentMethod] = useState<string | undefined>();
-  const [page, setPage] = useState(1);
-  const [detailId, setDetailId] = useState<string | null>(null);
-
-  const filters: SaleListFilters = useMemo(
-    () => ({ from: rangeToFrom(range), paymentMethod, page, pageSize: 25 }),
-    [range, paymentMethod, page],
-  );
-
-  const { data, isLoading, isFetching } = useSales(filters);
-
-  const totalAmount = useMemo(
-    () =>
-      (data?.rows ?? [])
-        .filter((r) => r.status === "completed")
-        .reduce((s, r) => s + Number(r.total), 0),
-    [data],
-  );
-
-  const columns = useMemo<ColumnDef<SaleListRow>[]>(() => {
-    const cols: ColumnDef<SaleListRow>[] = [
-      {
-        accessorKey: "ticket_number",
-        header: "Ticket",
-        cell: ({ row }) => <span className="font-mono">#{row.original.ticket_number}</span>,
-      },
-      {
-        accessorKey: "created_at",
-        header: "Fecha",
-        cell: ({ row }) => (
-          <span className="text-sm text-muted-foreground">
-            {formatDateTime(row.original.created_at)}
-          </span>
-        ),
-      },
-    ];
-    if (isAdmin) {
-      cols.push({
-        id: "seller",
-        header: "Vendedor",
-        cell: ({ row }) => row.original.seller?.full_name ?? "—",
-      });
-    }
-    cols.push(
-      {
-        accessorKey: "items_count",
-        header: "Ítems",
-        cell: ({ row }) => <span className="tabular-nums">{row.original.items_count}</span>,
-      },
-      {
-        accessorKey: "payment_method",
-        header: "Pago",
-        cell: ({ row }) => <PaymentBadge method={row.original.payment_method} />,
-      },
-      {
-        accessorKey: "total",
-        header: () => <div className="text-right">Total</div>,
-        cell: ({ row }) => (
-          <div className="text-right font-semibold tabular-nums">
-            {formatCurrency(Number(row.original.total))}
-            {row.original.status === "cancelled" && (
-              <Badge variant="destructive" className="ml-2 text-[10px]">anulada</Badge>
-            )}
-          </div>
-        ),
-      },
-      {
-        id: "actions",
-        header: "",
-        cell: ({ row }) => (
-          <div className="flex justify-end">
-            <Button variant="ghost" size="icon" className="size-8" onClick={() => setDetailId(row.original.id)}>
-              <Eye className="size-4" />
-            </Button>
-          </div>
-        ),
-      },
-    );
-    return cols;
-  }, [isAdmin]);
-
-  const totalPages = Math.max(1, Math.ceil((data?.count ?? 0) / 25));
-
-  return (
-    <div className="space-y-4">
-      <PageHeader title="Ventas" description="Historial de ventas registradas." />
-
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <Select
-          value={range}
-          onValueChange={(v) => {
-            setPage(1);
-            setRange(v);
-          }}
-        >
-          <SelectTrigger className="w-full sm:w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {RANGES.map((r) => (
-              <SelectItem key={r.value} value={r.value}>
-                {r.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select
-          value={paymentMethod ?? ALL}
-          onValueChange={(v) => {
-            setPage(1);
-            setPaymentMethod(v === ALL ? undefined : v);
-          }}
-        >
-          <SelectTrigger className="w-full sm:w-48">
-            <SelectValue placeholder="Método de pago" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>Todos los pagos</SelectItem>
-            {Object.entries(PAYMENT_METHOD_LABELS).map(([k, label]) => (
-              <SelectItem key={k} value={k}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Card className="ml-auto w-full sm:w-auto">
-          <CardContent className="flex items-center gap-3 px-4 py-2">
-            <span className="text-sm text-muted-foreground">Total del período</span>
-            <span className="text-lg font-bold tabular-nums">{formatCurrency(totalAmount)}</span>
-          </CardContent>
-        </Card>
-      </div>
-
-      <DataTable
-        columns={columns}
-        data={data?.rows ?? []}
-        isLoading={isLoading}
-        emptyMessage="No hay ventas en este período."
-      />
-
-      <div className="flex items-center justify-between text-sm text-muted-foreground">
-        <span>{isFetching ? "Actualizando…" : `${data?.count ?? 0} ventas`}</span>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Anterior
-          </Button>
-          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-            Siguiente
-          </Button>
-        </div>
-      </div>
-
-      <SaleDetailDialog
-        saleId={detailId}
-        open={Boolean(detailId)}
-        onOpenChange={(o) => !o && setDetailId(null)}
-      />
-    </div>
-  );
-}
-</file>
-
 <file path="src/features/sales/components/ticket-dialog.tsx">
 "use client";
 
@@ -8767,71 +8165,6 @@ export function TicketDialog({
       </DialogContent>
     </Dialog>
   );
-}
-</file>
-
-<file path="src/features/sales/actions.ts">
-"use server";
-
-import { headers } from "next/headers";
-import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
-import { requireUser, requireAdmin } from "@/lib/auth/session";
-import { getClientIp } from "@/lib/user-agent";
-import { createSaleSchema } from "./schemas";
-
-export interface CreateSaleResult {
-  ok: boolean;
-  error?: string;
-  ticketNumber?: number;
-  total?: number;
-}
-
-export async function createSaleAction(input: unknown): Promise<CreateSaleResult> {
-  await requireUser();
-  const parsed = createSaleSchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0]?.message };
-  }
-
-  const h = await headers();
-  const ua = h.get("user-agent");
-  const ip = getClientIp(h);
-
-  const supabase = await createClient();
-  const { data, error } = await supabase.rpc("create_sale", {
-    p_items: parsed.data.items,
-    p_payment_method: parsed.data.payment_method,
-    p_discount: parsed.data.discount,
-    p_note: parsed.data.note,
-    p_ip: ip ?? undefined,
-    p_user_agent: ua ?? undefined,
-  });
-
-  if (error) return { ok: false, error: error.message };
-
-  const result = data as { ticket_number: number; total: number };
-  revalidatePath("/sales");
-  revalidatePath("/cash");
-  return { ok: true, ticketNumber: result.ticket_number, total: result.total };
-}
-
-/** Anula una venta (solo admin). No restituye stock automáticamente. */
-export async function cancelSaleAction(id: string): Promise<{ ok: boolean; error?: string }> {
-  await requireAdmin();
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("sales")
-    .update({ status: "cancelled" })
-    .eq("id", id);
-  if (error) return { ok: false, error: error.message };
-  await supabase.rpc("log_audit", {
-    p_action: "sale_cancel",
-    p_entity: "sale",
-    p_entity_id: id,
-  });
-  revalidatePath("/sales");
-  return { ok: true };
 }
 </file>
 
@@ -10242,977 +9575,6 @@ export const useUIStore = create<UIState>((set) => ({
 }));
 </file>
 
-<file path="src/types/database.types.ts">
-// ⚠️ Generado automáticamente desde el esquema Supabase. No editar a mano.
-// Regenerar: pnpm db:types  (o supabase gen types typescript --linked)
-
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json | undefined }
-  | Json[]
-
-export type Database = {
-  public: {
-    Tables: {
-      audit_logs: {
-        Row: {
-          action: string
-          branch_id: string | null
-          browser: string | null
-          created_at: string
-          device: string | null
-          entity: string | null
-          entity_id: string | null
-          id: string
-          ip: string | null
-          new_data: Json | null
-          old_data: Json | null
-          user_agent: string | null
-          user_id: string | null
-        }
-        Insert: {
-          action: string
-          branch_id?: string | null
-          browser?: string | null
-          created_at?: string
-          device?: string | null
-          entity?: string | null
-          entity_id?: string | null
-          id?: string
-          ip?: string | null
-          new_data?: Json | null
-          old_data?: Json | null
-          user_agent?: string | null
-          user_id?: string | null
-        }
-        Update: {
-          action?: string
-          branch_id?: string | null
-          browser?: string | null
-          created_at?: string
-          device?: string | null
-          entity?: string | null
-          entity_id?: string | null
-          id?: string
-          ip?: string | null
-          new_data?: Json | null
-          old_data?: Json | null
-          user_agent?: string | null
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "audit_logs_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "audit_logs_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      branches: {
-        Row: {
-          address: string | null
-          created_at: string
-          id: string
-          is_active: boolean
-          name: string
-          phone: string | null
-          updated_at: string
-        }
-        Insert: {
-          address?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          name: string
-          phone?: string | null
-          updated_at?: string
-        }
-        Update: {
-          address?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          name?: string
-          phone?: string | null
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      cash_movements: {
-        Row: {
-          amount: number
-          cash_register_id: string
-          concept: string | null
-          created_at: string
-          id: string
-          payment_method: string | null
-          reference_id: string | null
-          type: string
-          user_id: string | null
-        }
-        Insert: {
-          amount: number
-          cash_register_id: string
-          concept?: string | null
-          created_at?: string
-          id?: string
-          payment_method?: string | null
-          reference_id?: string | null
-          type: string
-          user_id?: string | null
-        }
-        Update: {
-          amount?: number
-          cash_register_id?: string
-          concept?: string | null
-          created_at?: string
-          id?: string
-          payment_method?: string | null
-          reference_id?: string | null
-          type?: string
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cash_movements_cash_register_id_fkey"
-            columns: ["cash_register_id"]
-            isOneToOne: false
-            referencedRelation: "cash_registers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cash_movements_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      cash_registers: {
-        Row: {
-          branch_id: string
-          closed_at: string | null
-          closed_by: string | null
-          closing_amount: number | null
-          difference: number | null
-          expected_amount: number | null
-          id: string
-          notes: string | null
-          opened_at: string
-          opened_by: string
-          opening_amount: number
-          status: string
-        }
-        Insert: {
-          branch_id: string
-          closed_at?: string | null
-          closed_by?: string | null
-          closing_amount?: number | null
-          difference?: number | null
-          expected_amount?: number | null
-          id?: string
-          notes?: string | null
-          opened_at?: string
-          opened_by: string
-          opening_amount?: number
-          status?: string
-        }
-        Update: {
-          branch_id?: string
-          closed_at?: string | null
-          closed_by?: string | null
-          closing_amount?: number | null
-          difference?: number | null
-          expected_amount?: number | null
-          id?: string
-          notes?: string | null
-          opened_at?: string
-          opened_by?: string
-          opening_amount?: number
-          status?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cash_registers_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cash_registers_closed_by_fkey"
-            columns: ["closed_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "cash_registers_opened_by_fkey"
-            columns: ["opened_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      categories: {
-        Row: {
-          color: string
-          created_at: string
-          icon: string | null
-          id: string
-          name: string
-          slug: string
-        }
-        Insert: {
-          color?: string
-          created_at?: string
-          icon?: string | null
-          id?: string
-          name: string
-          slug: string
-        }
-        Update: {
-          color?: string
-          created_at?: string
-          icon?: string | null
-          id?: string
-          name?: string
-          slug?: string
-        }
-        Relationships: []
-      }
-      producers: {
-        Row: {
-          code_prefix: string | null
-          created_at: string
-          id: string
-          name: string
-          notes: string | null
-        }
-        Insert: {
-          code_prefix?: string | null
-          created_at?: string
-          id?: string
-          name: string
-          notes?: string | null
-        }
-        Update: {
-          code_prefix?: string | null
-          created_at?: string
-          id?: string
-          name?: string
-          notes?: string | null
-        }
-        Relationships: []
-      }
-      products: {
-        Row: {
-          barcode: string | null
-          branch_id: string | null
-          category_id: string | null
-          code: string
-          cost: number
-          created_at: string
-          created_by: string | null
-          description: string | null
-          id: string
-          is_active: boolean
-          min_stock: number
-          name: string
-          needs_review: boolean
-          price: number
-          producer_id: string | null
-          stock: number
-          unit_base: string
-          unit_label: string
-          unit_value: number | null
-          updated_at: string
-        }
-        Insert: {
-          barcode?: string | null
-          branch_id?: string | null
-          category_id?: string | null
-          code?: string
-          cost?: number
-          created_at?: string
-          created_by?: string | null
-          description?: string | null
-          id?: string
-          is_active?: boolean
-          min_stock?: number
-          name: string
-          needs_review?: boolean
-          price?: number
-          producer_id?: string | null
-          stock?: number
-          unit_base?: string
-          unit_label?: string
-          unit_value?: number | null
-          updated_at?: string
-        }
-        Update: {
-          barcode?: string | null
-          branch_id?: string | null
-          category_id?: string | null
-          code?: string
-          cost?: number
-          created_at?: string
-          created_by?: string | null
-          description?: string | null
-          id?: string
-          is_active?: boolean
-          min_stock?: number
-          name?: string
-          needs_review?: boolean
-          price?: number
-          producer_id?: string | null
-          stock?: number
-          unit_base?: string
-          unit_label?: string
-          unit_value?: number | null
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "products_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_category_id_fkey"
-            columns: ["category_id"]
-            isOneToOne: false
-            referencedRelation: "categories"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_producer_id_fkey"
-            columns: ["producer_id"]
-            isOneToOne: false
-            referencedRelation: "producers"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      profiles: {
-        Row: {
-          branch_id: string | null
-          created_at: string
-          email: string | null
-          full_name: string
-          id: string
-          is_active: boolean
-          phone: string | null
-          role_id: number
-          updated_at: string
-        }
-        Insert: {
-          branch_id?: string | null
-          created_at?: string
-          email?: string | null
-          full_name?: string
-          id: string
-          is_active?: boolean
-          phone?: string | null
-          role_id: number
-          updated_at?: string
-        }
-        Update: {
-          branch_id?: string | null
-          created_at?: string
-          email?: string | null
-          full_name?: string
-          id?: string
-          is_active?: boolean
-          phone?: string | null
-          role_id?: number
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "profiles_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "profiles_role_id_fkey"
-            columns: ["role_id"]
-            isOneToOne: false
-            referencedRelation: "roles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      roles: {
-        Row: {
-          created_at: string
-          description: string | null
-          id: number
-          name: string
-          permissions: Json
-        }
-        Insert: {
-          created_at?: string
-          description?: string | null
-          id?: never
-          name: string
-          permissions?: Json
-        }
-        Update: {
-          created_at?: string
-          description?: string | null
-          id?: never
-          name?: string
-          permissions?: Json
-        }
-        Relationships: []
-      }
-      sale_items: {
-        Row: {
-          id: string
-          product_code: string | null
-          product_id: string | null
-          product_name: string
-          quantity: number
-          sale_id: string
-          subtotal: number
-          unit_price: number
-        }
-        Insert: {
-          id?: string
-          product_code?: string | null
-          product_id?: string | null
-          product_name: string
-          quantity: number
-          sale_id: string
-          subtotal: number
-          unit_price: number
-        }
-        Update: {
-          id?: string
-          product_code?: string | null
-          product_id?: string | null
-          product_name?: string
-          quantity?: number
-          sale_id?: string
-          subtotal?: number
-          unit_price?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "sale_items_product_id_fkey"
-            columns: ["product_id"]
-            isOneToOne: false
-            referencedRelation: "products"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sale_items_product_id_fkey"
-            columns: ["product_id"]
-            isOneToOne: false
-            referencedRelation: "products_view"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sale_items_sale_id_fkey"
-            columns: ["sale_id"]
-            isOneToOne: false
-            referencedRelation: "sales"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      sales: {
-        Row: {
-          branch_id: string
-          cash_register_id: string | null
-          created_at: string
-          discount: number
-          id: string
-          note: string | null
-          payment_method: string
-          seller_id: string
-          status: string
-          subtotal: number
-          ticket_number: number
-          total: number
-        }
-        Insert: {
-          branch_id: string
-          cash_register_id?: string | null
-          created_at?: string
-          discount?: number
-          id?: string
-          note?: string | null
-          payment_method: string
-          seller_id: string
-          status?: string
-          subtotal?: number
-          ticket_number?: number
-          total?: number
-        }
-        Update: {
-          branch_id?: string
-          cash_register_id?: string | null
-          created_at?: string
-          discount?: number
-          id?: string
-          note?: string | null
-          payment_method?: string
-          seller_id?: string
-          status?: string
-          subtotal?: number
-          ticket_number?: number
-          total?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "sales_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sales_cash_register_id_fkey"
-            columns: ["cash_register_id"]
-            isOneToOne: false
-            referencedRelation: "cash_registers"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "sales_seller_id_fkey"
-            columns: ["seller_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      sessions: {
-        Row: {
-          browser: string | null
-          device: string | null
-          id: string
-          ip: string | null
-          login_at: string
-          logout_at: string | null
-          user_agent: string | null
-          user_id: string
-        }
-        Insert: {
-          browser?: string | null
-          device?: string | null
-          id?: string
-          ip?: string | null
-          login_at?: string
-          logout_at?: string | null
-          user_agent?: string | null
-          user_id: string
-        }
-        Update: {
-          browser?: string | null
-          device?: string | null
-          id?: string
-          ip?: string | null
-          login_at?: string
-          logout_at?: string | null
-          user_agent?: string | null
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "sessions_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      stock_movements: {
-        Row: {
-          branch_id: string | null
-          created_at: string
-          id: string
-          new_stock: number | null
-          previous_stock: number | null
-          product_id: string
-          quantity: number
-          reason: string | null
-          reference_id: string | null
-          type: string
-          user_id: string | null
-        }
-        Insert: {
-          branch_id?: string | null
-          created_at?: string
-          id?: string
-          new_stock?: number | null
-          previous_stock?: number | null
-          product_id: string
-          quantity: number
-          reason?: string | null
-          reference_id?: string | null
-          type: string
-          user_id?: string | null
-        }
-        Update: {
-          branch_id?: string | null
-          created_at?: string
-          id?: string
-          new_stock?: number | null
-          previous_stock?: number | null
-          product_id?: string
-          quantity?: number
-          reason?: string | null
-          reference_id?: string | null
-          type?: string
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "stock_movements_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "stock_movements_product_id_fkey"
-            columns: ["product_id"]
-            isOneToOne: false
-            referencedRelation: "products"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "stock_movements_product_id_fkey"
-            columns: ["product_id"]
-            isOneToOne: false
-            referencedRelation: "products_view"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "stock_movements_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-    }
-    Views: {
-      products_view: {
-        Row: {
-          barcode: string | null
-          branch_id: string | null
-          category_color: string | null
-          category_id: string | null
-          category_name: string | null
-          category_slug: string | null
-          code: string | null
-          cost: number | null
-          created_at: string | null
-          created_by: string | null
-          description: string | null
-          id: string | null
-          is_active: boolean | null
-          is_low_stock: boolean | null
-          min_stock: number | null
-          name: string | null
-          needs_review: boolean | null
-          price: number | null
-          producer_id: string | null
-          producer_name: string | null
-          stock: number | null
-          unit_base: string | null
-          unit_label: string | null
-          unit_value: number | null
-          updated_at: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "products_branch_id_fkey"
-            columns: ["branch_id"]
-            isOneToOne: false
-            referencedRelation: "branches"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_category_id_fkey"
-            columns: ["category_id"]
-            isOneToOne: false
-            referencedRelation: "categories"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "products_producer_id_fkey"
-            columns: ["producer_id"]
-            isOneToOne: false
-            referencedRelation: "producers"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-    }
-    Functions: {
-      add_cash_movement: {
-        Args: {
-          p_amount: number
-          p_concept?: string
-          p_payment_method?: string
-          p_type: string
-        }
-        Returns: string
-      }
-      adjust_stock: {
-        Args: { p_new_stock: number; p_product_id: string; p_reason?: string }
-        Returns: undefined
-      }
-      bulk_update_products: {
-        Args: { p_items: Json }
-        Returns: number
-      }
-      close_cash_register: {
-        Args: { p_counted: number; p_notes?: string; p_register: string }
-        Returns: Json
-      }
-      create_sale: {
-        Args: {
-          p_discount?: number
-          p_ip?: string
-          p_items: Json
-          p_note?: string
-          p_payment_method: string
-          p_user_agent?: string
-        }
-        Returns: Json
-      }
-      current_branch_id: { Args: never; Returns: string }
-      current_role_name: { Args: never; Returns: string }
-      dashboard_metrics: { Args: { p_range?: string }; Returns: Json }
-      dearmor: { Args: { "": string }; Returns: string }
-      gen_random_uuid: { Args: never; Returns: string }
-      gen_salt: { Args: { "": string }; Returns: string }
-      is_active_user: { Args: never; Returns: boolean }
-      is_admin: { Args: never; Returns: boolean }
-      log_audit: {
-        Args: {
-          p_action: string
-          p_browser?: string
-          p_device?: string
-          p_entity?: string
-          p_entity_id?: string
-          p_ip?: string
-          p_new?: Json
-          p_old?: Json
-          p_user_agent?: string
-        }
-        Returns: string
-      }
-      open_cash_register: {
-        Args: { p_notes?: string; p_opening: number }
-        Returns: string
-      }
-      pgp_armor_headers: {
-        Args: { "": string }
-        Returns: Record<string, unknown>[]
-      }
-      sales_daily_series: {
-        Args: { p_days?: number }
-        Returns: {
-          count: number
-          day: string
-          total: number
-        }[]
-      }
-      show_limit: { Args: never; Returns: number }
-      show_trgm: { Args: { "": string }; Returns: string[] }
-      top_products: {
-        Args: { p_days?: number; p_limit?: number }
-        Returns: {
-          product_id: string
-          product_name: string
-          qty: number
-          total: number
-        }[]
-      }
-      top_sellers: {
-        Args: { p_days?: number }
-        Returns: {
-          full_name: string
-          sales_count: number
-          seller_id: string
-          total: number
-        }[]
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
-}
-
-type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
-
-type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
-
-export type Tables<
-  DefaultSchemaTableNameOrOptions extends
-    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
-    | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
-> = DefaultSchemaTableNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
-      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
-      Row: infer R
-    }
-    ? R
-    : never
-  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
-        DefaultSchema["Views"])
-    ? (DefaultSchema["Tables"] &
-        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
-        Row: infer R
-      }
-      ? R
-      : never
-    : never
-
-export type TablesInsert<
-  DefaultSchemaTableNameOrOptions extends
-    | keyof DefaultSchema["Tables"]
-    | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
-> = DefaultSchemaTableNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
-      Insert: infer I
-    }
-    ? I
-    : never
-  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
-    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
-        Insert: infer I
-      }
-      ? I
-      : never
-    : never
-
-export type TablesUpdate<
-  DefaultSchemaTableNameOrOptions extends
-    | keyof DefaultSchema["Tables"]
-    | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
-> = DefaultSchemaTableNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
-      Update: infer U
-    }
-    ? U
-    : never
-  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
-    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
-        Update: infer U
-      }
-      ? U
-      : never
-    : never
-
-export type Enums<
-  DefaultSchemaEnumNameOrOptions extends
-    | keyof DefaultSchema["Enums"]
-    | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
-> = DefaultSchemaEnumNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
-  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
-    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
-    : never
-
-export type CompositeTypes<
-  PublicCompositeTypeNameOrOptions extends
-    | keyof DefaultSchema["CompositeTypes"]
-    | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
-> = PublicCompositeTypeNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
-  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
-    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
-    : never
-
-export const Constants = {
-  public: {
-    Enums: {},
-  },
-} as const
-</file>
-
 <file path="src/types/db.ts">
 import type { Database } from "./database.types";
 
@@ -12374,6 +10736,87 @@ $$;
 grant execute on function public.bulk_update_products(jsonb) to authenticated;
 </file>
 
+<file path="supabase/migrations/20260602_0010_cancel_sale.sql">
+-- ============================================================================
+-- 0010 — RPC cancel_sale: anula una venta de forma atómica.
+--
+-- Efectos:
+--   1. Marca la venta como 'cancelled'.
+--   2. Restituye el stock de cada ítem con kardex.
+--   3. Registra un movimiento de caja inverso (expense) en la misma caja.
+--   4. Escribe auditoría.
+-- Solo admin puede cancelar. No se puede cancelar una venta ya cancelada.
+-- ============================================================================
+
+create or replace function public.cancel_sale(p_sale_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_sale     record;
+  v_item     record;
+  v_prev_stk numeric(12,3);
+  v_branch   uuid;
+begin
+  if not public.is_admin() then
+    raise exception 'Solo un administrador puede cancelar ventas';
+  end if;
+
+  -- Bloquear la fila para evitar doble cancelación concurrente
+  select * into v_sale from public.sales where id = p_sale_id for update;
+  if not found then
+    raise exception 'Venta inexistente';
+  end if;
+  if v_sale.status = 'cancelled' then
+    raise exception 'La venta ya está cancelada';
+  end if;
+
+  -- 1. Marcar como cancelada
+  update public.sales set status = 'cancelled' where id = p_sale_id;
+
+  -- 2. Restituir stock ítem por ítem con kardex
+  for v_item in select * from public.sale_items where sale_id = p_sale_id
+  loop
+    continue when v_item.product_id is null;
+
+    select stock, branch_id into v_prev_stk, v_branch
+    from public.products where id = v_item.product_id for update;
+    continue when not found;
+
+    update public.products
+    set stock = stock + v_item.quantity
+    where id = v_item.product_id;
+
+    insert into public.stock_movements
+      (product_id, branch_id, type, quantity, previous_stock, new_stock, reason, reference_id, user_id)
+    values
+      (v_item.product_id, coalesce(v_branch, v_sale.branch_id),
+       'in', v_item.quantity, v_prev_stk, v_prev_stk + v_item.quantity,
+       'Anulación Venta #' || v_sale.ticket_number, p_sale_id, auth.uid());
+  end loop;
+
+  -- 3. Movimiento inverso en la caja (registra la devolución para el arqueo)
+  if v_sale.cash_register_id is not null then
+    insert into public.cash_movements
+      (cash_register_id, type, amount, concept, payment_method, reference_id, user_id)
+    values
+      (v_sale.cash_register_id, 'expense', v_sale.total,
+       'Anulación Venta #' || v_sale.ticket_number,
+       v_sale.payment_method, p_sale_id, auth.uid());
+  end if;
+
+  -- 4. Auditoría
+  perform public.log_audit('sale_cancel', 'sale', p_sale_id::text,
+    jsonb_build_object('status', 'completed', 'total', v_sale.total),
+    jsonb_build_object('status', 'cancelled'));
+end;
+$$;
+
+grant execute on function public.cancel_sale(uuid) to authenticated;
+</file>
+
 <file path="supabase/fix_sucursal.sql">
 -- ============================================================================
 -- ARREGLO: asignar sucursal por defecto a los perfiles que no tienen.
@@ -12476,6 +10919,92 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+</file>
+
+<file path="CLAUDE.md">
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Commands
+
+```bash
+pnpm dev          # dev server on http://localhost:3000
+pnpm build        # production build
+pnpm typecheck    # tsc --noEmit (no test suite exists)
+pnpm lint         # eslint
+pnpm seed         # import business Excel into Supabase (requires .env.local)
+pnpm seed -- --dry     # parse only, no DB writes
+pnpm seed -- --reset   # delete existing products first, then import
+pnpm seed -- --file "path.xlsx"
+pnpm db:types     # regenerate src/types/database.types.ts from linked Supabase project
+```
+
+No test suite. Type-checking is the primary static verification tool.
+
+## Architecture
+
+**Feature-based modular structure.** Each feature under `src/features/<name>/` has:
+- `api.ts` — client-side Supabase queries (used by TanStack Query hooks)
+- `hooks.ts` — TanStack Query hooks wrapping the api
+- `actions.ts` — Next.js Server Actions for all mutations (validated with Zod schemas in `schemas.ts`)
+- `components/` — UI components scoped to the feature
+
+**Data flow:**
+- **Reads:** `api.ts` → `hooks.ts` → component. TanStack Query handles caching and Realtime revalidation.
+- **Writes:** Server Actions → Supabase RPC (for complex operations) or direct table mutations. Always call `revalidatePath()` after mutations.
+- **Ephemeral UI state:** Zustand (`src/stores/`). The POS cart (`cart-store.ts`) is persisted to localStorage.
+
+**Backend: Supabase as the source of truth.**
+- All tables have RLS enabled. Security is enforced at two levels: middleware (`src/lib/supabase/middleware.ts`) for route protection, and RLS + `SECURITY DEFINER` functions for data.
+- Complex mutations use atomic PostgreSQL RPC functions to avoid partial writes. Never split an atomic operation across multiple Supabase calls from the app layer.
+
+## Key RPCs (supabase/migrations/0005 & 0009)
+
+| RPC | Who | What |
+|-----|-----|-------|
+| `create_sale(p_items, p_payment_method, p_discount, p_note)` | any user | Inserts sale + items, decrements stock, writes kardex, registers cash movement — all atomic |
+| `cancel_sale(p_sale_id uuid)` | admin | Marks sale cancelled, restores stock (+kardex `'in'`), inserts reversal `'expense'` cash movement — all atomic |
+| `adjust_stock(p_product_id, p_new_stock, p_reason)` | admin | Updates stock + kardex entry |
+| `bulk_update_products(p_items jsonb)` | admin | Mass update price/stock/name from Excel reimport, writes kardex |
+| `open_cash_register` / `close_cash_register` / `add_cash_movement` | admin | Cash session lifecycle |
+| `dashboard_metrics`, `sales_daily_series`, `top_products`, `top_sellers` | any | Read-only aggregations |
+
+## RBAC
+
+Two roles: `admin` and `seller`. Checked via helpers in `src/lib/rbac/permissions.ts` and SQL helpers (`is_admin()`, `is_active_user()`, `current_branch_id()`).
+
+- `requireAdmin()` / `requireUser()` in `src/lib/auth/session.ts` — use these at the top of every Server Action.
+- Sellers can create sales and view their own sales. Admins get full access.
+
+## Database schema highlights
+
+- `products.code` is **not unique** (the business catalog has collisions). Never assume uniqueness on code.
+- `sales.status` ∈ `('completed', 'cancelled')`. The cancel flow must restore stock atomically via RPC.
+- `stock_movements` is the kardex — every stock change must produce a row here with `previous_stock` / `new_stock`.
+- `cash_movements.type` ∈ `('income', 'expense', 'sale')`. Sales create a `'sale'` movement; cancellations must reverse it.
+- All tables have `branch_id` for future multi-branch support.
+
+## Excel import/export
+
+- **Export** (`src/features/products/export.ts`): generates `productos_YYYY-MM-DD.xlsx` with an `ID` column (UUID).
+- **Reimport via UI** (`src/features/import/`): products with an `ID` column → update via `bulk_update_products`; products without ID → insert as new. Always use the exported file (not the original business Excel) for updates.
+- **Seed script** (`scripts/import-excel.ts`): reads the original business Excel (no IDs). Use `--reset` flag if reimporting to avoid duplicates.
+
+## Supabase clients
+
+- `src/lib/supabase/client.ts` — browser client (for hooks/api)
+- `src/lib/supabase/server.ts` — server client for Server Actions and RSC
+- `src/lib/supabase/admin.ts` — service role client (bypasses RLS; only for admin scripts)
+
+## Environment variables
+
+```
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY          # server-only (seed script, user creation)
+NEXT_PUBLIC_DEFAULT_BRANCH_ID      # optional, defaults to seed UUID
+```
 </file>
 
 <file path="components.json">
@@ -12873,6 +11402,1975 @@ Tickets PDF · lector de código de barras (campo `barcode` listo) · múltiples
     "**/*.mts"
   ],
   "exclude": ["node_modules"]
+}
+</file>
+
+<file path="scripts/import-excel.ts">
+/**
+ * Seed / importador del Excel real del negocio.
+ *
+ *   pnpm seed            → importa a Supabase (requiere credenciales en .env.local)
+ *   pnpm seed -- --dry   → solo parsea y muestra estadísticas (sin tocar la DB)
+ *   pnpm seed -- --file "ruta.xlsx"
+ *
+ * Detecta columnas, limpia encabezados repetidos/banners, normaliza unidades,
+ * deriva productores (prefijo de código) y categorías (palabras clave).
+ */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { config } from "dotenv";
+import { createClient } from "@supabase/supabase-js";
+import { readWorkbook, pickCatalogSheet } from "../src/features/import/workbook";
+import { parseProductRows } from "../src/features/import/parser";
+
+config({ path: ".env.local" });
+
+const args = process.argv.slice(2);
+const DRY = args.includes("--dry");
+const RESET = args.includes("--reset");
+const fileArg = args[args.indexOf("--file") + 1];
+const FILE =
+  fileArg && !fileArg.startsWith("--")
+    ? fileArg
+    : "business-assets/PLANILLAS PARA JAVIER.xlsx";
+
+const DEFAULT_BRANCH = "00000000-0000-0000-0000-000000000001";
+
+function titleCase(s: string) {
+  return s.charAt(0) + s.slice(1).toLowerCase();
+}
+
+async function main() {
+  console.log(`\n📄 Leyendo ${FILE} …`);
+  const buf = readFileSync(resolve(FILE));
+  const sheets = readWorkbook(new Uint8Array(buf));
+  console.log(`   Hojas: ${sheets.map((s) => `"${s.name}"`).join(", ")}`);
+
+  const sheet = pickCatalogSheet(sheets);
+  console.log(`   Hoja de catálogo: "${sheet.name}" (${sheet.rows.length} filas)`);
+
+  const { products, stats, columnMap } = parseProductRows(sheet.rows);
+
+  console.log("\n📊 Análisis:");
+  console.table(stats);
+  console.log("   Mapa de columnas detectado:", columnMap);
+
+  // Distribución por categoría
+  const byCat = products.reduce<Record<string, number>>((acc, p) => {
+    acc[p.categorySlug] = (acc[p.categorySlug] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log("\n🗂  Productos por categoría:");
+  console.table(byCat);
+
+  const prefixes = [...new Set(products.map((p) => p.producerPrefix).filter(Boolean))] as string[];
+  console.log(`\n🏭 Productores detectados (${prefixes.length}):`, prefixes.slice(0, 25).join(", "), prefixes.length > 25 ? "…" : "");
+  console.log(`\n⚠️  Productos a revisar: ${stats.needsReview}`);
+  console.log("   Ejemplos:");
+  products.filter((p) => p.needsReview).slice(0, 5).forEach((p) =>
+    console.log(`   · fila ${p.rowNumber} [${p.code || "s/cód"}] ${p.name} → ${p.issues.join("; ")}`),
+  );
+
+  if (DRY) {
+    console.log("\n✅ Dry-run: no se escribió nada en la base.\n");
+    return;
+  }
+
+  // ── Escritura en Supabase ──────────────────────────────────────────────
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || url.includes("placeholder") || key.includes("placeholder")) {
+    console.error(
+      "\n❌ Faltan credenciales reales de Supabase en .env.local " +
+        "(NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY).\n" +
+        "   Corré primero las migraciones + seed.sql en tu proyecto, completá .env.local y reintentá.\n" +
+        "   Mientras tanto podés usar:  pnpm seed -- --dry\n",
+    );
+    process.exit(1);
+  }
+
+  const supabase = createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+
+  // Branch
+  const branchId = process.env.NEXT_PUBLIC_DEFAULT_BRANCH_ID || DEFAULT_BRANCH;
+
+  // Categorías: slug → id
+  const { data: cats, error: catErr } = await supabase.from("categories").select("id, slug");
+  if (catErr) throw catErr;
+  const catMap = new Map((cats ?? []).map((c) => [c.slug, c.id]));
+  if (!catMap.has("general")) {
+    console.warn("⚠️  No se encontraron categorías. ¿Corriste supabase/seed.sql?");
+  }
+
+  // Productores: insertar solo los que faltan (sin depender de constraint único)
+  console.log("\n🏭 Sincronizando productores…");
+  const { data: existingProducers } = await supabase.from("producers").select("id, code_prefix");
+  const prodMap = new Map(
+    (existingProducers ?? []).filter((p) => p.code_prefix).map((p) => [p.code_prefix as string, p.id]),
+  );
+  const missing = prefixes.filter((p) => !prodMap.has(p));
+  if (missing.length) {
+    const { data: created, error } = await supabase
+      .from("producers")
+      .insert(missing.map((p) => ({ name: titleCase(p), code_prefix: p })))
+      .select("id, code_prefix");
+    if (error) throw error;
+    (created ?? []).forEach((p) => p.code_prefix && prodMap.set(p.code_prefix, p.id));
+  }
+
+  // Limpiar productos existentes si se pide reset (evita duplicados)
+  if (RESET) {
+    console.log("🗑  --reset: eliminando productos existentes de la sucursal…");
+    const { error: delErr } = await supabase
+      .from("products")
+      .delete()
+      .eq("branch_id", branchId);
+    if (delErr) throw delErr;
+    console.log("   Productos eliminados.");
+  } else {
+    const { count } = await supabase
+      .from("products")
+      .select("id", { count: "exact", head: true })
+      .eq("branch_id", branchId);
+    if (count && count > 0) {
+      console.error(
+        `\n❌ Ya existen ${count} productos en la sucursal.\n` +
+          "   Usá --reset para borrarlos antes de reimportar, o importá desde la app\n" +
+          "   usando el Excel exportado (que tiene columna ID para actualizar sin duplicar).\n",
+      );
+      process.exit(1);
+    }
+  }
+
+  // Productos
+  console.log("📦 Insertando productos…");
+  const payload = products.map((p) => ({
+    code: p.code,
+    name: p.name,
+    unit_label: p.unitLabel,
+    unit_value: p.unitValue,
+    unit_base: p.unitBase,
+    price: p.price,
+    stock: 0,
+    min_stock: 5,
+    category_id: catMap.get(p.categorySlug) ?? catMap.get("general") ?? null,
+    producer_id: p.producerPrefix ? (prodMap.get(p.producerPrefix) ?? null) : null,
+    branch_id: branchId,
+    needs_review: p.needsReview,
+    is_active: true,
+  }));
+
+  const CHUNK = 200;
+  let inserted = 0;
+  for (let i = 0; i < payload.length; i += CHUNK) {
+    const slice = payload.slice(i, i + CHUNK);
+    const { error } = await supabase.from("products").insert(slice);
+    if (error) {
+      console.error(`❌ Error en lote ${i / CHUNK + 1}:`, error.message);
+      process.exit(1);
+    }
+    inserted += slice.length;
+    process.stdout.write(`\r   ${inserted}/${payload.length}`);
+  }
+
+  console.log(`\n\n✅ Importación completa: ${inserted} productos, ${prefixes.length} productores.\n`);
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
+</file>
+
+<file path="src/app/(auth)/login/page.tsx">
+import type { Metadata } from "next";
+import Image from "next/image";
+import { redirect } from "next/navigation";
+import { LoginForm } from "@/features/auth/components/login-form";
+import { getSession } from "@/lib/auth/session";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+
+export const metadata: Metadata = { title: "Ingresar" };
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string; error?: string }>;
+}) {
+  const session = await getSession();
+  if (session) redirect("/");
+
+  const { message, error } = await searchParams;
+
+  return (
+    <Card className="w-full max-w-sm shadow-lg">
+      <CardHeader className="items-center text-center">
+        <Image
+          src="/logo.jpeg"
+          alt="Hunuc Pachacutek"
+          width={72}
+          height={72}
+          priority
+          className="rounded-xl"
+        />
+        <CardTitle className="text-xl">Hunuc Pachacutek</CardTitle>
+        <CardDescription>Ingresá para gestionar el almacén</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {message === "clave-actualizada" && (
+          <Alert>
+            <AlertDescription>
+              Contraseña actualizada. Podés iniciar sesión.
+            </AlertDescription>
+          </Alert>
+        )}
+        {error === "link-invalido" && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              El enlace es inválido o ya expiró. Solicitá uno nuevo.
+            </AlertDescription>
+          </Alert>
+        )}
+        <LoginForm />
+      </CardContent>
+    </Card>
+  );
+}
+</file>
+
+<file path="src/app/auth/confirm/route.ts">
+import { type EmailOtpType } from "@supabase/supabase-js";
+import { type NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+
+export async function GET(request: NextRequest) {
+  const { searchParams, origin } = new URL(request.url);
+  const token_hash = searchParams.get("token_hash");
+  const type = searchParams.get("type") as EmailOtpType | null;
+  const next = searchParams.get("next") ?? (type === "recovery" ? "/reset-password" : "/");
+
+  if (token_hash && type) {
+    const supabase = await createClient();
+    const { error } = await supabase.auth.verifyOtp({ type, token_hash });
+    if (!error) {
+      return NextResponse.redirect(`${origin}${next}`);
+    }
+  }
+
+  return NextResponse.redirect(`${origin}/login?error=link-invalido`);
+}
+</file>
+
+<file path="src/features/auth/actions.ts">
+"use server";
+
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { parseUserAgent, getClientIp } from "@/lib/user-agent";
+import { loginSchema, resetPasswordSchema } from "./schemas";
+
+export interface AuthActionState {
+  error?: string;
+}
+
+/**
+ * Inicia sesión con email + contraseña. Registra la sesión y un audit log
+ * de "login". Redirige al inicio si tiene éxito.
+ */
+export async function signInAction(
+  _prev: AuthActionState,
+  formData: FormData,
+): Promise<AuthActionState> {
+  const parsed = loginSchema.safeParse({
+    email: formData.get("email"),
+    password: formData.get("password"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
+
+  if (error || !data.user) {
+    return { error: "Email o contraseña incorrectos" };
+  }
+
+  // Verificar que el perfil esté activo
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("is_active")
+    .eq("id", data.user.id)
+    .single();
+  if (profile && !profile.is_active) {
+    await supabase.auth.signOut();
+    return { error: "Tu cuenta está desactivada. Contactá al administrador." };
+  }
+
+  // Registrar sesión + auditoría (best-effort, no bloquea el login)
+  try {
+    const h = await headers();
+    const ua = h.get("user-agent");
+    const { browser, device } = parseUserAgent(ua);
+    const ip = getClientIp(h);
+
+    await supabase.from("sessions").insert({
+      user_id: data.user.id,
+      ip,
+      user_agent: ua,
+      device,
+      browser,
+    });
+    await supabase.rpc("log_audit", {
+      p_action: "login",
+      p_entity: "session",
+      p_ip: ip ?? undefined,
+      p_user_agent: ua ?? undefined,
+      p_device: device,
+      p_browser: browser,
+    });
+  } catch {
+    // ignorar errores de telemetría
+  }
+
+  redirect("/");
+}
+
+/** Actualiza la contraseña del usuario autenticado luego del reset. */
+export async function updatePasswordAction(
+  _prev: AuthActionState,
+  formData: FormData,
+): Promise<AuthActionState> {
+  const parsed = resetPasswordSchema.safeParse({
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({
+    password: parsed.data.password,
+  });
+
+  if (error) {
+    return { error: "No se pudo actualizar la contraseña. Intentá de nuevo." };
+  }
+
+  redirect("/login?message=clave-actualizada");
+}
+
+/** Cierra la sesión y vuelve al login. */
+export async function signOutAction() {
+  const supabase = await createClient();
+  await supabase.rpc("log_audit", { p_action: "logout", p_entity: "session" });
+  await supabase.auth.signOut();
+  redirect("/login");
+}
+</file>
+
+<file path="src/features/auth/schemas.ts">
+import { z } from "zod";
+
+export const loginSchema = z.object({
+  email: z.string().email("Email inválido"),
+  password: z.string().min(6, "Mínimo 6 caracteres"),
+});
+
+export type LoginInput = z.infer<typeof loginSchema>;
+
+export const resetPasswordSchema = z
+  .object({
+    password: z.string().min(8, "Mínimo 8 caracteres"),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Las contraseñas no coinciden",
+    path: ["confirmPassword"],
+  });
+
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+</file>
+
+<file path="src/features/sales/components/sale-detail-dialog.tsx">
+"use client";
+
+import { useState, useTransition } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { Loader2, XCircle } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Separator } from "@/components/ui/separator";
+import { queryKeys } from "@/lib/query/keys";
+import { formatCurrency, formatDateTime } from "@/lib/format";
+import { useSaleDetail } from "../hooks";
+import { cancelSaleAction } from "../actions";
+import { PaymentBadge } from "./payment-badge";
+
+export function SaleDetailDialog({
+  saleId,
+  open,
+  onOpenChange,
+  isAdmin = false,
+}: {
+  saleId: string | null;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  isAdmin?: boolean;
+}) {
+  const { data, isLoading } = useSaleDetail(open ? saleId : null);
+  const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  function handleCancel() {
+    if (!saleId) return;
+    startTransition(async () => {
+      const res = await cancelSaleAction(saleId);
+      if (!res.ok) {
+        toast.error(res.error ?? "Error al cancelar la venta");
+        return;
+      }
+      toast.success("Venta cancelada. Stock restituido.");
+      queryClient.invalidateQueries({ queryKey: queryKeys.sales.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.products.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.cash.all });
+      setConfirmOpen(false);
+      onOpenChange(false);
+    });
+  }
+
+  const canCancel = isAdmin && data?.status === "completed";
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {isLoading || !data ? "Detalle de venta" : `Ticket #${data.ticket_number}`}
+            </DialogTitle>
+          </DialogHeader>
+
+          {isLoading || !data ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-8 w-full" />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <span>{formatDateTime(data.created_at)}</span>
+                <PaymentBadge method={data.payment_method} />
+              </div>
+              {data.seller && (
+                <p className="text-sm text-muted-foreground">
+                  Vendedor: {data.seller.full_name}
+                </p>
+              )}
+              <Separator />
+              <ul className="space-y-1.5">
+                {data.items.map((it) => (
+                  <li key={it.id} className="flex justify-between gap-2 text-sm">
+                    <span className="flex-1">
+                      <span className="tabular-nums text-muted-foreground">
+                        {Number(it.quantity)}×{" "}
+                      </span>
+                      {it.product_name}
+                    </span>
+                    <span className="tabular-nums">{formatCurrency(Number(it.subtotal))}</span>
+                  </li>
+                ))}
+              </ul>
+              <Separator />
+              {Number(data.discount) > 0 && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>Descuento</span>
+                  <span className="tabular-nums">- {formatCurrency(Number(data.discount))}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-lg font-bold">
+                <span>Total</span>
+                <span className="tabular-nums">{formatCurrency(Number(data.total))}</span>
+              </div>
+
+              {data.status === "cancelled" ? (
+                <Badge variant="destructive" className="w-full justify-center py-1.5 text-sm">
+                  Venta anulada
+                </Badge>
+              ) : canCancel ? (
+                <Button
+                  variant="destructive"
+                  className="w-full"
+                  onClick={() => setConfirmOpen(true)}
+                  disabled={pending}
+                >
+                  {pending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <XCircle className="size-4" />
+                  )}
+                  Cancelar venta
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cancelar la venta?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se anulará el Ticket #{data?.ticket_number}. El stock de todos los
+              productos se restituirá automáticamente y se registrará el movimiento
+              inverso en la caja. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending}>Volver</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleCancel}
+              disabled={pending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+              Sí, cancelar venta
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+</file>
+
+<file path="src/features/sales/components/sales-client.tsx">
+"use client";
+
+import { useMemo, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { Eye } from "lucide-react";
+import { PageHeader } from "@/components/shared/page-header";
+import { DataTable } from "@/components/shared/data-table";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card";
+import { formatCurrency, formatDateTime } from "@/lib/format";
+import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
+import { useSales } from "../hooks";
+import type { SaleListRow, SaleListFilters } from "../api";
+import { PaymentBadge } from "./payment-badge";
+import { SaleDetailDialog } from "./sale-detail-dialog";
+
+const ALL = "__all__";
+const RANGES = [
+  { value: "today", label: "Hoy" },
+  { value: "7d", label: "Últimos 7 días" },
+  { value: "30d", label: "Últimos 30 días" },
+  { value: "all", label: "Todas" },
+];
+
+function rangeToFrom(range: string): string | undefined {
+  const d = new Date();
+  if (range === "today") {
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+  if (range === "7d") return new Date(Date.now() - 7 * 864e5).toISOString();
+  if (range === "30d") return new Date(Date.now() - 30 * 864e5).toISOString();
+  return undefined;
+}
+
+export function SalesClient({ isAdmin }: { isAdmin: boolean }) {
+  const [range, setRange] = useState("today");
+  const [paymentMethod, setPaymentMethod] = useState<string | undefined>();
+  const [page, setPage] = useState(1);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  const filters: SaleListFilters = useMemo(
+    () => ({ from: rangeToFrom(range), paymentMethod, page, pageSize: 25 }),
+    [range, paymentMethod, page],
+  );
+
+  const { data, isLoading, isFetching } = useSales(filters);
+
+  const totalAmount = useMemo(
+    () =>
+      (data?.rows ?? [])
+        .filter((r) => r.status === "completed")
+        .reduce((s, r) => s + Number(r.total), 0),
+    [data],
+  );
+
+  const columns = useMemo<ColumnDef<SaleListRow>[]>(() => {
+    const cols: ColumnDef<SaleListRow>[] = [
+      {
+        accessorKey: "ticket_number",
+        header: "Ticket",
+        cell: ({ row }) => <span className="font-mono">#{row.original.ticket_number}</span>,
+      },
+      {
+        accessorKey: "created_at",
+        header: "Fecha",
+        cell: ({ row }) => (
+          <span className="text-sm text-muted-foreground">
+            {formatDateTime(row.original.created_at)}
+          </span>
+        ),
+      },
+    ];
+    if (isAdmin) {
+      cols.push({
+        id: "seller",
+        header: "Vendedor",
+        cell: ({ row }) => row.original.seller?.full_name ?? "—",
+      });
+    }
+    cols.push(
+      {
+        accessorKey: "items_count",
+        header: "Ítems",
+        cell: ({ row }) => <span className="tabular-nums">{row.original.items_count}</span>,
+      },
+      {
+        accessorKey: "payment_method",
+        header: "Pago",
+        cell: ({ row }) => <PaymentBadge method={row.original.payment_method} />,
+      },
+      {
+        accessorKey: "total",
+        header: () => <div className="text-right">Total</div>,
+        cell: ({ row }) => (
+          <div className="text-right font-semibold tabular-nums">
+            {formatCurrency(Number(row.original.total))}
+            {row.original.status === "cancelled" && (
+              <Badge variant="destructive" className="ml-2 text-[10px]">anulada</Badge>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <div className="flex justify-end">
+            <Button variant="ghost" size="icon" className="size-8" onClick={() => setDetailId(row.original.id)}>
+              <Eye className="size-4" />
+            </Button>
+          </div>
+        ),
+      },
+    );
+    return cols;
+  }, [isAdmin]);
+
+  const totalPages = Math.max(1, Math.ceil((data?.count ?? 0) / 25));
+
+  return (
+    <div className="space-y-4">
+      <PageHeader title="Ventas" description="Historial de ventas registradas." />
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Select
+          value={range}
+          onValueChange={(v) => {
+            setPage(1);
+            setRange(v);
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {RANGES.map((r) => (
+              <SelectItem key={r.value} value={r.value}>
+                {r.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={paymentMethod ?? ALL}
+          onValueChange={(v) => {
+            setPage(1);
+            setPaymentMethod(v === ALL ? undefined : v);
+          }}
+        >
+          <SelectTrigger className="w-full sm:w-48">
+            <SelectValue placeholder="Método de pago" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>Todos los pagos</SelectItem>
+            {Object.entries(PAYMENT_METHOD_LABELS).map(([k, label]) => (
+              <SelectItem key={k} value={k}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Card className="ml-auto w-full sm:w-auto">
+          <CardContent className="flex items-center gap-3 px-4 py-2">
+            <span className="text-sm text-muted-foreground">Total del período</span>
+            <span className="text-lg font-bold tabular-nums">{formatCurrency(totalAmount)}</span>
+          </CardContent>
+        </Card>
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={data?.rows ?? []}
+        isLoading={isLoading}
+        emptyMessage="No hay ventas en este período."
+      />
+
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>{isFetching ? "Actualizando…" : `${data?.count ?? 0} ventas`}</span>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            Anterior
+          </Button>
+          <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
+            Siguiente
+          </Button>
+        </div>
+      </div>
+
+      <SaleDetailDialog
+        saleId={detailId}
+        open={Boolean(detailId)}
+        onOpenChange={(o) => !o && setDetailId(null)}
+        isAdmin={isAdmin}
+      />
+    </div>
+  );
+}
+</file>
+
+<file path="src/features/sales/actions.ts">
+"use server";
+
+import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
+import { createClient } from "@/lib/supabase/server";
+import { requireUser, requireAdmin } from "@/lib/auth/session";
+import { getClientIp } from "@/lib/user-agent";
+import { createSaleSchema } from "./schemas";
+
+export interface CreateSaleResult {
+  ok: boolean;
+  error?: string;
+  ticketNumber?: number;
+  total?: number;
+}
+
+export async function createSaleAction(input: unknown): Promise<CreateSaleResult> {
+  await requireUser();
+  const parsed = createSaleSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message };
+  }
+
+  const h = await headers();
+  const ua = h.get("user-agent");
+  const ip = getClientIp(h);
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("create_sale", {
+    p_items: parsed.data.items,
+    p_payment_method: parsed.data.payment_method,
+    p_discount: parsed.data.discount,
+    p_note: parsed.data.note,
+    p_ip: ip ?? undefined,
+    p_user_agent: ua ?? undefined,
+  });
+
+  if (error) return { ok: false, error: error.message };
+
+  const result = data as { ticket_number: number; total: number };
+  revalidatePath("/sales");
+  revalidatePath("/cash");
+  return { ok: true, ticketNumber: result.ticket_number, total: result.total };
+}
+
+/** Anula una venta: revierte stock, caja y escribe kardex (solo admin). */
+export async function cancelSaleAction(id: string): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("cancel_sale", { p_sale_id: id });
+  if (error) return { ok: false, error: error.message };
+  revalidatePath("/sales");
+  revalidatePath("/cash");
+  revalidatePath("/products");
+  return { ok: true };
+}
+</file>
+
+<file path="src/types/database.types.ts">
+// ⚠️ Generado automáticamente desde el esquema Supabase. No editar a mano.
+// Regenerar: pnpm db:types  (o supabase gen types typescript --linked)
+
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[]
+
+export type Database = {
+  public: {
+    Tables: {
+      audit_logs: {
+        Row: {
+          action: string
+          branch_id: string | null
+          browser: string | null
+          created_at: string
+          device: string | null
+          entity: string | null
+          entity_id: string | null
+          id: string
+          ip: string | null
+          new_data: Json | null
+          old_data: Json | null
+          user_agent: string | null
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          branch_id?: string | null
+          browser?: string | null
+          created_at?: string
+          device?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          ip?: string | null
+          new_data?: Json | null
+          old_data?: Json | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          branch_id?: string | null
+          browser?: string | null
+          created_at?: string
+          device?: string | null
+          entity?: string | null
+          entity_id?: string | null
+          id?: string
+          ip?: string | null
+          new_data?: Json | null
+          old_data?: Json | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_logs_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "audit_logs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      branches: {
+        Row: {
+          address: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          phone: string | null
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      cash_movements: {
+        Row: {
+          amount: number
+          cash_register_id: string
+          concept: string | null
+          created_at: string
+          id: string
+          payment_method: string | null
+          reference_id: string | null
+          type: string
+          user_id: string | null
+        }
+        Insert: {
+          amount: number
+          cash_register_id: string
+          concept?: string | null
+          created_at?: string
+          id?: string
+          payment_method?: string | null
+          reference_id?: string | null
+          type: string
+          user_id?: string | null
+        }
+        Update: {
+          amount?: number
+          cash_register_id?: string
+          concept?: string | null
+          created_at?: string
+          id?: string
+          payment_method?: string | null
+          reference_id?: string | null
+          type?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cash_movements_cash_register_id_fkey"
+            columns: ["cash_register_id"]
+            isOneToOne: false
+            referencedRelation: "cash_registers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cash_movements_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cash_registers: {
+        Row: {
+          branch_id: string
+          closed_at: string | null
+          closed_by: string | null
+          closing_amount: number | null
+          difference: number | null
+          expected_amount: number | null
+          id: string
+          notes: string | null
+          opened_at: string
+          opened_by: string
+          opening_amount: number
+          status: string
+        }
+        Insert: {
+          branch_id: string
+          closed_at?: string | null
+          closed_by?: string | null
+          closing_amount?: number | null
+          difference?: number | null
+          expected_amount?: number | null
+          id?: string
+          notes?: string | null
+          opened_at?: string
+          opened_by: string
+          opening_amount?: number
+          status?: string
+        }
+        Update: {
+          branch_id?: string
+          closed_at?: string | null
+          closed_by?: string | null
+          closing_amount?: number | null
+          difference?: number | null
+          expected_amount?: number | null
+          id?: string
+          notes?: string | null
+          opened_at?: string
+          opened_by?: string
+          opening_amount?: number
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cash_registers_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cash_registers_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cash_registers_opened_by_fkey"
+            columns: ["opened_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      categories: {
+        Row: {
+          color: string
+          created_at: string
+          icon: string | null
+          id: string
+          name: string
+          slug: string
+        }
+        Insert: {
+          color?: string
+          created_at?: string
+          icon?: string | null
+          id?: string
+          name: string
+          slug: string
+        }
+        Update: {
+          color?: string
+          created_at?: string
+          icon?: string | null
+          id?: string
+          name?: string
+          slug?: string
+        }
+        Relationships: []
+      }
+      producers: {
+        Row: {
+          code_prefix: string | null
+          created_at: string
+          id: string
+          name: string
+          notes: string | null
+        }
+        Insert: {
+          code_prefix?: string | null
+          created_at?: string
+          id?: string
+          name: string
+          notes?: string | null
+        }
+        Update: {
+          code_prefix?: string | null
+          created_at?: string
+          id?: string
+          name?: string
+          notes?: string | null
+        }
+        Relationships: []
+      }
+      products: {
+        Row: {
+          barcode: string | null
+          branch_id: string | null
+          category_id: string | null
+          code: string
+          cost: number
+          created_at: string
+          created_by: string | null
+          description: string | null
+          id: string
+          is_active: boolean
+          min_stock: number
+          name: string
+          needs_review: boolean
+          price: number
+          producer_id: string | null
+          stock: number
+          unit_base: string
+          unit_label: string
+          unit_value: number | null
+          updated_at: string
+        }
+        Insert: {
+          barcode?: string | null
+          branch_id?: string | null
+          category_id?: string | null
+          code?: string
+          cost?: number
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          min_stock?: number
+          name: string
+          needs_review?: boolean
+          price?: number
+          producer_id?: string | null
+          stock?: number
+          unit_base?: string
+          unit_label?: string
+          unit_value?: number | null
+          updated_at?: string
+        }
+        Update: {
+          barcode?: string | null
+          branch_id?: string | null
+          category_id?: string | null
+          code?: string
+          cost?: number
+          created_at?: string
+          created_by?: string | null
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          min_stock?: number
+          name?: string
+          needs_review?: boolean
+          price?: number
+          producer_id?: string | null
+          stock?: number
+          unit_base?: string
+          unit_label?: string
+          unit_value?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_producer_id_fkey"
+            columns: ["producer_id"]
+            isOneToOne: false
+            referencedRelation: "producers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          branch_id: string | null
+          created_at: string
+          email: string | null
+          full_name: string
+          id: string
+          is_active: boolean
+          phone: string | null
+          role_id: number
+          updated_at: string
+        }
+        Insert: {
+          branch_id?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string
+          id: string
+          is_active?: boolean
+          phone?: string | null
+          role_id: number
+          updated_at?: string
+        }
+        Update: {
+          branch_id?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string
+          id?: string
+          is_active?: boolean
+          phone?: string | null
+          role_id?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profiles_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "profiles_role_id_fkey"
+            columns: ["role_id"]
+            isOneToOne: false
+            referencedRelation: "roles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      roles: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: number
+          name: string
+          permissions: Json
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: never
+          name: string
+          permissions?: Json
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: never
+          name?: string
+          permissions?: Json
+        }
+        Relationships: []
+      }
+      sale_items: {
+        Row: {
+          id: string
+          product_code: string | null
+          product_id: string | null
+          product_name: string
+          quantity: number
+          sale_id: string
+          subtotal: number
+          unit_price: number
+        }
+        Insert: {
+          id?: string
+          product_code?: string | null
+          product_id?: string | null
+          product_name: string
+          quantity: number
+          sale_id: string
+          subtotal: number
+          unit_price: number
+        }
+        Update: {
+          id?: string
+          product_code?: string | null
+          product_id?: string | null
+          product_name?: string
+          quantity?: number
+          sale_id?: string
+          subtotal?: number
+          unit_price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sale_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sale_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products_view"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sale_items_sale_id_fkey"
+            columns: ["sale_id"]
+            isOneToOne: false
+            referencedRelation: "sales"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sales: {
+        Row: {
+          branch_id: string
+          cash_register_id: string | null
+          created_at: string
+          discount: number
+          id: string
+          note: string | null
+          payment_method: string
+          seller_id: string
+          status: string
+          subtotal: number
+          ticket_number: number
+          total: number
+        }
+        Insert: {
+          branch_id: string
+          cash_register_id?: string | null
+          created_at?: string
+          discount?: number
+          id?: string
+          note?: string | null
+          payment_method: string
+          seller_id: string
+          status?: string
+          subtotal?: number
+          ticket_number?: number
+          total?: number
+        }
+        Update: {
+          branch_id?: string
+          cash_register_id?: string | null
+          created_at?: string
+          discount?: number
+          id?: string
+          note?: string | null
+          payment_method?: string
+          seller_id?: string
+          status?: string
+          subtotal?: number
+          ticket_number?: number
+          total?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sales_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sales_cash_register_id_fkey"
+            columns: ["cash_register_id"]
+            isOneToOne: false
+            referencedRelation: "cash_registers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sales_seller_id_fkey"
+            columns: ["seller_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sessions: {
+        Row: {
+          browser: string | null
+          device: string | null
+          id: string
+          ip: string | null
+          login_at: string
+          logout_at: string | null
+          user_agent: string | null
+          user_id: string
+        }
+        Insert: {
+          browser?: string | null
+          device?: string | null
+          id?: string
+          ip?: string | null
+          login_at?: string
+          logout_at?: string | null
+          user_agent?: string | null
+          user_id: string
+        }
+        Update: {
+          browser?: string | null
+          device?: string | null
+          id?: string
+          ip?: string | null
+          login_at?: string
+          logout_at?: string | null
+          user_agent?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sessions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      stock_movements: {
+        Row: {
+          branch_id: string | null
+          created_at: string
+          id: string
+          new_stock: number | null
+          previous_stock: number | null
+          product_id: string
+          quantity: number
+          reason: string | null
+          reference_id: string | null
+          type: string
+          user_id: string | null
+        }
+        Insert: {
+          branch_id?: string | null
+          created_at?: string
+          id?: string
+          new_stock?: number | null
+          previous_stock?: number | null
+          product_id: string
+          quantity: number
+          reason?: string | null
+          reference_id?: string | null
+          type: string
+          user_id?: string | null
+        }
+        Update: {
+          branch_id?: string | null
+          created_at?: string
+          id?: string
+          new_stock?: number | null
+          previous_stock?: number | null
+          product_id?: string
+          quantity?: number
+          reason?: string | null
+          reference_id?: string | null
+          type?: string
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stock_movements_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stock_movements_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stock_movements_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products_view"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stock_movements_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+    }
+    Views: {
+      products_view: {
+        Row: {
+          barcode: string | null
+          branch_id: string | null
+          category_color: string | null
+          category_id: string | null
+          category_name: string | null
+          category_slug: string | null
+          code: string | null
+          cost: number | null
+          created_at: string | null
+          created_by: string | null
+          description: string | null
+          id: string | null
+          is_active: boolean | null
+          is_low_stock: boolean | null
+          min_stock: number | null
+          name: string | null
+          needs_review: boolean | null
+          price: number | null
+          producer_id: string | null
+          producer_name: string | null
+          stock: number | null
+          unit_base: string | null
+          unit_label: string | null
+          unit_value: number | null
+          updated_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "products_branch_id_fkey"
+            columns: ["branch_id"]
+            isOneToOne: false
+            referencedRelation: "branches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "products_producer_id_fkey"
+            columns: ["producer_id"]
+            isOneToOne: false
+            referencedRelation: "producers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+    }
+    Functions: {
+      add_cash_movement: {
+        Args: {
+          p_amount: number
+          p_concept?: string
+          p_payment_method?: string
+          p_type: string
+        }
+        Returns: string
+      }
+      adjust_stock: {
+        Args: { p_new_stock: number; p_product_id: string; p_reason?: string }
+        Returns: undefined
+      }
+      bulk_update_products: {
+        Args: { p_items: Json }
+        Returns: number
+      }
+      close_cash_register: {
+        Args: { p_counted: number; p_notes?: string; p_register: string }
+        Returns: Json
+      }
+      cancel_sale: {
+        Args: { p_sale_id: string }
+        Returns: undefined
+      }
+      create_sale: {
+        Args: {
+          p_discount?: number
+          p_ip?: string
+          p_items: Json
+          p_note?: string
+          p_payment_method: string
+          p_user_agent?: string
+        }
+        Returns: Json
+      }
+      current_branch_id: { Args: never; Returns: string }
+      current_role_name: { Args: never; Returns: string }
+      dashboard_metrics: { Args: { p_range?: string }; Returns: Json }
+      dearmor: { Args: { "": string }; Returns: string }
+      gen_random_uuid: { Args: never; Returns: string }
+      gen_salt: { Args: { "": string }; Returns: string }
+      is_active_user: { Args: never; Returns: boolean }
+      is_admin: { Args: never; Returns: boolean }
+      log_audit: {
+        Args: {
+          p_action: string
+          p_browser?: string
+          p_device?: string
+          p_entity?: string
+          p_entity_id?: string
+          p_ip?: string
+          p_new?: Json
+          p_old?: Json
+          p_user_agent?: string
+        }
+        Returns: string
+      }
+      open_cash_register: {
+        Args: { p_notes?: string; p_opening: number }
+        Returns: string
+      }
+      pgp_armor_headers: {
+        Args: { "": string }
+        Returns: Record<string, unknown>[]
+      }
+      sales_daily_series: {
+        Args: { p_days?: number }
+        Returns: {
+          count: number
+          day: string
+          total: number
+        }[]
+      }
+      show_limit: { Args: never; Returns: number }
+      show_trgm: { Args: { "": string }; Returns: string[] }
+      top_products: {
+        Args: { p_days?: number; p_limit?: number }
+        Returns: {
+          product_id: string
+          product_name: string
+          qty: number
+          total: number
+        }[]
+      }
+      top_sellers: {
+        Args: { p_days?: number }
+        Returns: {
+          full_name: string
+          sales_count: number
+          seller_id: string
+          total: number
+        }[]
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
+}
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const
+</file>
+
+<file path="src/app/globals.css">
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.65rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  /* Verde natural (almacén agroecológico) */
+  --primary: oklch(0.55 0.12 150);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.95 0.03 150);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.6 0.13 150);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.75 0.15 75);
+  --warning-foreground: oklch(0.205 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.55 0.12 150);
+  --chart-1: oklch(0.55 0.12 150);
+  --chart-2: oklch(0.6 0.118 185);
+  --chart-3: oklch(0.65 0.15 75);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.55 0.12 150);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.7 0.13 150);
+  --primary-foreground: oklch(0.145 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.3 0.04 150);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.7 0.13 150);
+  --success-foreground: oklch(0.145 0 0);
+  --warning: oklch(0.8 0.15 75);
+  --warning-foreground: oklch(0.145 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.7 0.13 150);
+  --chart-1: oklch(0.7 0.13 150);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.7 0.13 150);
+  --sidebar-primary-foreground: oklch(0.145 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: color-mix(in oklch, var(--ring) 50%, transparent);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  @media (min-width: 768px) {
+    html {
+      font-size: 20px;
+    }
+  }
+  /* Tablas y POS: tipografía tabular para alinear precios */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
 }
 </file>
 
