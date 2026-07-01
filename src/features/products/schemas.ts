@@ -13,7 +13,13 @@ export const productSchema = z.object({
   cost: z.coerce.number().nonnegative().optional().default(0),
   stock: z.coerce.number().min(0, "El stock no puede ser negativo").default(0),
   min_stock: z.coerce.number().min(0).default(5),
-  barcode: z.string().trim().max(64).optional().nullable(),
+  barcode: z
+    .string()
+    .trim()
+    .max(64)
+    .optional()
+    .nullable()
+    .transform((v) => (v ? v : null)),
   is_active: z.boolean().default(true),
 });
 

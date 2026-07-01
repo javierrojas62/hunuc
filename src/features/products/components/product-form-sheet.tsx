@@ -36,7 +36,11 @@ import { Switch } from "@/components/ui/switch";
 import { queryKeys } from "@/lib/query/keys";
 import { normalizeUnit } from "@/lib/units";
 import { productSchema, type ProductInput } from "../schemas";
-import { createProductAction, updateProductAction } from "../actions";
+import {
+  createProductAction,
+  updateProductAction,
+  adjustStockAction,
+} from "../actions";
 import { useCategories, useProducers } from "../hooks";
 import type { ProductViewRow } from "../api";
 
@@ -115,13 +119,36 @@ export function ProductFormSheet({
       unit_base: norm.base,
     };
 
-    const res = isEdit
-      ? await updateProductAction(product!.id, payload)
-      : await createProductAction(payload);
-
-    if (!res.ok) {
-      toast.error(res.error ?? "Error al guardar");
-      return;
+    if (isEdit) {
+      const originalStock = Number(product!.stock);
+      const newStock = Number(values.stock);
+      // El resto de los campos se actualiza sin tocar el stock; el cambio de
+      // stock se hace por separado vía adjust_stock para que quede en el kardex.
+      const res = await updateProductAction(product!.id, {
+        ...payload,
+        stock: originalStock,
+      });
+      if (!res.ok) {
+        toast.error(res.error ?? "Error al guardar");
+        return;
+      }
+      if (newStock !== originalStock) {
+        const stockRes = await adjustStockAction({
+          product_id: product!.id,
+          new_stock: newStock,
+          reason: "Ajuste desde edición de producto",
+        });
+        if (!stockRes.ok) {
+          toast.error(stockRes.error ?? "Error al ajustar stock");
+          return;
+        }
+      }
+    } else {
+      const res = await createProductAction(payload);
+      if (!res.ok) {
+        toast.error(res.error ?? "Error al guardar");
+        return;
+      }
     }
     toast.success(isEdit ? "Producto actualizado" : "Producto creado");
     queryClient.invalidateQueries({ queryKey: queryKeys.products.all });
@@ -281,16 +308,11 @@ export function ProductFormSheet({
                   <FormItem>
                     <FormLabel>Stock</FormLabel>
                     <FormControl>
-                      <Input
-                        type="number"
-                        step="0.001"
-                        disabled={isEdit}
-                        {...field}
-                      />
+                      <Input type="number" step="0.001" {...field} />
                     </FormControl>
                     {isEdit && (
                       <p className="text-xs text-muted-foreground">
-                        Usá &quot;Ajustar stock&quot; para modificarlo (queda en el kardex).
+                        Si lo cambiás, el ajuste queda registrado en el kardex.
                       </p>
                     )}
                     <FormMessage />

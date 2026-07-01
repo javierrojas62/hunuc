@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(node -e ' *)",
-      "Bash(node -e 'console.log\\(require.resolve\\(\"xlsx\",{paths:[\"./node_modules\"]}\\)\\)')"
+      "Bash(node -e 'console.log\\(require.resolve\\(\"xlsx\",{paths:[\"./node_modules\"]}\\)\\)')",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }
