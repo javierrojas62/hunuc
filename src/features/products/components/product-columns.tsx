@@ -32,9 +32,11 @@ export function buildProductColumns(
       cell: ({ row }) => {
         const p = row.original;
         return (
-          <div className="flex flex-col">
-            <span className="font-medium">{p.name}</span>
-            <span className="text-xs text-muted-foreground">
+          <div className="flex max-w-[26rem] flex-col">
+            <span className="font-medium whitespace-normal break-words">
+              {p.name}
+            </span>
+            <span className="text-xs text-muted-foreground whitespace-normal break-words">
               {p.code || "—"} · {p.unit_label}
             </span>
           </div>
