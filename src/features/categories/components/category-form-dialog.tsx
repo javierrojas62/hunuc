@@ -43,7 +43,6 @@ const DEFAULT_VALUES: CategoryInput = {
   name: "",
   slug: "",
   color: "#6b7280",
-  icon: null,
 };
 
 interface CategoryFormDialogProps {
@@ -75,7 +74,6 @@ export function CategoryFormDialog({
               name: category.name,
               slug: category.slug,
               color: category.color,
-              icon: category.icon,
             }
           : DEFAULT_VALUES,
       );
@@ -178,20 +176,6 @@ export function CategoryFormDialog({
                       className="flex-1"
                     />
                   </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="icon"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Ícono (opcional)</FormLabel>
-                  <FormControl>
-                    <Input placeholder="🛒" {...field} value={field.value ?? ""} />
-                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}

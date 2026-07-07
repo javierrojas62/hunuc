@@ -13,13 +13,6 @@ export const categorySchema = z.object({
     .trim()
     .regex(/^#[0-9a-fA-F]{6}$/, "Color inválido")
     .default("#6b7280"),
-  icon: z
-    .string()
-    .trim()
-    .max(40)
-    .optional()
-    .nullable()
-    .transform((v) => (v ? v : null)),
 });
 
 export type CategoryInput = z.infer<typeof categorySchema>;

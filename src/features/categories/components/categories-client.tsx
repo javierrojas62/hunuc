@@ -107,7 +107,6 @@ export function CategoriesClient() {
                       variant="outline"
                       style={{ borderColor: c.color, color: c.color }}
                     >
-                      {c.icon ? `${c.icon} ` : ""}
                       {c.name}
                     </Badge>
                   </TableCell>
