@@ -13,6 +13,7 @@ export const queryKeys = {
   },
   categories: {
     all: ["categories"] as const,
+    manage: ["categories", "manage"] as const,
   },
   producers: {
     all: ["producers"] as const,

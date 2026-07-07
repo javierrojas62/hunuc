@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, AlertTriangle, Upload, Download, Loader2 } from "lucide-react";
+import { Plus, Search, AlertTriangle, Upload, Download, Loader2, Tags } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/shared/page-header";
@@ -156,6 +156,11 @@ export function ProductsClient({ isAdmin }: { isAdmin: boolean }) {
               <Button variant="outline" asChild>
                 <Link href="/products/import">
                   <Upload /> Importar
+                </Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href="/products/categories">
+                  <Tags /> Categorías
                 </Link>
               </Button>
               <Button
