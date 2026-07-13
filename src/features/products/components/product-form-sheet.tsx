@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Combobox } from "@/components/shared/combobox";
 import { queryKeys } from "@/lib/query/keys";
 import { normalizeUnit } from "@/lib/units";
 import { productSchema, type ProductInput } from "../schemas";
@@ -248,24 +249,17 @@ export function ProductFormSheet({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Productor</FormLabel>
-                  <Select
+                  <Combobox
                     value={field.value ?? NONE}
-                    onValueChange={(v) => field.onChange(v === NONE ? null : v)}
-                  >
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Sin productor" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectItem value={NONE}>Sin productor</SelectItem>
-                      {producers?.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    onChange={(v) => field.onChange(v === NONE ? null : v)}
+                    options={[
+                      { value: NONE, label: "Sin productor" },
+                      ...(producers?.map((p) => ({ value: p.id, label: p.name })) ?? []),
+                    ]}
+                    placeholder="Sin productor"
+                    searchPlaceholder="Buscar productor…"
+                    emptyText="No se encontraron productores."
+                  />
                   <FormMessage />
                 </FormItem>
               )}
