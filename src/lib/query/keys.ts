@@ -17,6 +17,7 @@ export const queryKeys = {
   },
   producers: {
     all: ["producers"] as const,
+    manage: ["producers", "manage"] as const,
   },
   sales: {
     all: ["sales"] as const,
