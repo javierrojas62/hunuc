@@ -3,7 +3,6 @@
 import { Minus, Plus, Trash2, ShoppingCart, Loader2, Banknote, CreditCard, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useCartStore } from "@/stores/cart-store";
 import { PAYMENT_METHODS, type PaymentMethod } from "@/lib/constants";
@@ -53,7 +52,7 @@ export function PosCart({
         )}
       </div>
 
-      <ScrollArea className="flex-1">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center text-muted-foreground">
             <ShoppingCart className="size-10 opacity-40" />
@@ -110,7 +109,7 @@ export function PosCart({
             ))}
           </ul>
         )}
-      </ScrollArea>
+      </div>
 
       <div className="space-y-3 border-t p-4">
         {/* Método de pago */}
