@@ -6,7 +6,6 @@ import { Plus, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -83,7 +82,6 @@ export function ProducersClient() {
           <TableHeader>
             <TableRow>
               <TableHead>Productor</TableHead>
-              <TableHead>Prefijo</TableHead>
               <TableHead className="text-right">Productos</TableHead>
               <TableHead className="text-right"></TableHead>
             </TableRow>
@@ -92,7 +90,7 @@ export function ProducersClient() {
             {isLoading ? (
               Array.from({ length: 4 }).map((_, i) => (
                 <TableRow key={i}>
-                  {Array.from({ length: 4 }).map((_, j) => (
+                  {Array.from({ length: 3 }).map((_, j) => (
                     <TableCell key={j}>
                       <Skeleton className="h-6 w-full" />
                     </TableCell>
@@ -103,9 +101,6 @@ export function ProducersClient() {
               producers.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="font-medium">{p.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {p.code_prefix ? <Badge variant="outline">{p.code_prefix}</Badge> : "—"}
-                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {p.product_count}
                   </TableCell>
@@ -138,7 +133,7 @@ export function ProducersClient() {
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={3} className="h-24 text-center text-muted-foreground">
                   No hay productores.
                 </TableCell>
               </TableRow>

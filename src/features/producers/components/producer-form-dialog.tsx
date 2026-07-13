@@ -32,7 +32,6 @@ import type { ProducerRow } from "../api";
 
 const DEFAULT_VALUES: ProducerInput = {
   name: "",
-  code_prefix: undefined,
   notes: undefined,
 };
 
@@ -61,7 +60,6 @@ export function ProducerFormDialog({
         producer
           ? {
               name: producer.name,
-              code_prefix: producer.code_prefix ?? undefined,
               notes: producer.notes ?? undefined,
             }
           : DEFAULT_VALUES,
@@ -105,20 +103,6 @@ export function ProducerFormDialog({
                   <FormLabel>Nombre *</FormLabel>
                   <FormControl>
                     <Input placeholder="Vilma" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="code_prefix"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Prefijo</FormLabel>
-                  <FormControl>
-                    <Input placeholder="VILMA" {...field} value={field.value ?? ""} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
