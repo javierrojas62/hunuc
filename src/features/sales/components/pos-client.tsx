@@ -68,11 +68,11 @@ export function PosClient() {
   }
 
   return (
-    <div className="grid flex-1 gap-4 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_420px]">
-      <div className="flex min-h-[50vh] flex-col lg:h-[calc(100svh-7.5rem)]">
+    <div className="grid flex-1 gap-4 lg:grid-cols-[1fr_23.75rem] xl:grid-cols-[1fr_26.25rem]">
+      <div className="flex min-h-[50vh] min-w-0 flex-col lg:h-[calc(100svh-7.5rem)]">
         <PosSearch onSelect={handleSelect} />
       </div>
-      <div className="min-h-[50vh] lg:h-[calc(100svh-7.5rem)]">
+      <div className="min-h-[50vh] min-w-0 lg:h-[calc(100svh-7.5rem)]">
         <PosCart onCheckout={handleCheckout} checkingOut={pending} />
       </div>
 
