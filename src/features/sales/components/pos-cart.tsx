@@ -62,46 +62,50 @@ export function PosCart({
         ) : (
           <ul className="divide-y">
             {items.map((item) => (
-              <li key={item.productId} className="flex items-center gap-2 p-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{item.name}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatCurrency(item.price)} · {item.unitLabel}
-                  </p>
+              <li key={item.productId} className="space-y-2 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{item.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatCurrency(item.price)} · {item.unitLabel}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right text-sm font-semibold tabular-nums">
+                    {formatCurrency(item.price * item.quantity)}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="outline" size="icon" className="size-7" onClick={() => decrement(item.productId)}>
-                    <Minus className="size-3" />
-                  </Button>
-                  <Input
-                    value={item.quantity}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      if (!Number.isNaN(v)) setQuantity(item.productId, v);
-                    }}
-                    className="h-7 w-12 px-1 text-center tabular-nums"
-                  />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button variant="outline" size="icon" className="size-7" onClick={() => decrement(item.productId)}>
+                      <Minus className="size-3" />
+                    </Button>
+                    <Input
+                      value={item.quantity}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isNaN(v)) setQuantity(item.productId, v);
+                      }}
+                      className="h-7 w-12 px-1 text-center tabular-nums"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="size-7"
+                      disabled={item.quantity >= item.stock}
+                      onClick={() => increment(item.productId)}
+                    >
+                      <Plus className="size-3" />
+                    </Button>
+                  </div>
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="icon"
-                    className="size-7"
-                    disabled={item.quantity >= item.stock}
-                    onClick={() => increment(item.productId)}
+                    className="size-7 shrink-0 text-muted-foreground"
+                    onClick={() => removeItem(item.productId)}
                   >
-                    <Plus className="size-3" />
+                    <Trash2 className="size-3.5" />
                   </Button>
                 </div>
-                <div className="w-20 text-right text-sm font-semibold tabular-nums">
-                  {formatCurrency(item.price * item.quantity)}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 text-muted-foreground"
-                  onClick={() => removeItem(item.productId)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
               </li>
             ))}
           </ul>
